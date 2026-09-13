@@ -5,6 +5,14 @@ const MONTH_NAMES = [
   'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'
 ];
 
+const ABSENCE_META = {
+  vacation: { label: 'חופשה', group: 'vacation' },
+  sick: { label: 'מחלה', group: 'sick' },
+  child_sick: { label: 'מחלת ילד', group: 'sick' },
+  spouse_sick: { label: 'מחלת בן זוג', group: 'sick' },
+  conference: { label: 'כנס', group: 'vacation' }
+};
+
 function pad(n) { return String(n).padStart(2, '0'); }
 function dateStr(y, m, d) { return `${y}-${pad(m)}-${pad(d)}`; }
 function todayStr() {
@@ -136,11 +144,11 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
       const info = (cellData && cellData[ds]) || {};
       const classes = ['cal-day'];
       if (ds === today) classes.push('today');
-      if (info.className) classes.push(info.className);
       if (info.hoursLabel) classes.push('has-hours');
       html += `<button class="${classes.join(' ')}" data-date="${ds}">
+        <span class="day-dot ${info.dotGroup || ''}"></span>
         <span class="day-num">${d}</span>
-        ${info.hoursLabel ? `<span class="day-hours">${info.hoursLabel}</span>` : ''}
+        <span class="day-hours">${info.hoursLabel || ''}</span>
       </button>`;
     }
     html += '</div>';
@@ -153,32 +161,19 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
   return { refresh, setMonth };
 }
 
-async function loadAbsenceMap(year, month) {
-  const rows = await api(`/api/absences?year=${year}&month=${month}`);
-  const map = {};
-  rows.forEach(r => { map[r.date] = r; });
-  return map;
-}
-async function loadSummaryMap(year, month) {
-  const rows = await api(`/api/attendance/summary?year=${year}&month=${month}`);
-  const map = {};
-  rows.forEach(r => { map[r.date] = r; });
-  return map;
-}
-
-/* ---------- update-attendance screen (absence + manual entries + editing) ---------- */
+/* ---------- update-attendance screen (type/absence report + editing, one form per day) ---------- */
 const updateCal = createCalendarController({
   containerId: 'update-calendar',
   titleId: 'update-cal-title',
   onRender: async (year, month) => {
-    const [absences, summary] = await Promise.all([loadAbsenceMap(year, month), loadSummaryMap(year, month)]);
+    const sheet = await api(`/api/attendance/sheet?year=${year}&month=${month}`);
     const cellData = {};
-    Object.entries(summary).forEach(([ds, s]) => {
-      cellData[ds] = cellData[ds] || {};
-      if (s.label) cellData[ds].hoursLabel = s.label;
-    });
-    Object.entries(absences).forEach(([ds, a]) => {
-      cellData[ds] = { ...(cellData[ds] || {}), className: a.type };
+    sheet.days.forEach(day => {
+      const totalMinutes = day.minutes.regular + day.minutes.ot125 + day.minutes.ot150 + day.minutes.shabbat;
+      cellData[day.date] = {
+        hoursLabel: totalMinutes ? minutesToLabel(totalMinutes) : '',
+        dotGroup: day.absence ? (ABSENCE_META[day.absence.type] || {}).group || 'vacation' : null
+      };
     });
     return cellData;
   },
@@ -187,124 +182,106 @@ const updateCal = createCalendarController({
 document.querySelector('[data-cal-prev="update"]').addEventListener('click', () => updateCal.setMonth(-1));
 document.querySelector('[data-cal-next="update"]').addEventListener('click', () => updateCal.setMonth(1));
 
+// Saturday has no standard hours (it's the rest day); Friday is the shortened 7h day; else 8h.
+// Mirrors server/attendance.js's dayTypeFromDate+standardDayMinutes for the "whole day" default.
+function standardHoursForDate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dow = new Date(y, m - 1, d).getDay();
+  if (dow === 6) return 0;
+  return dow === 5 ? 7 : 8;
+}
+
 async function openUpdateModal(date) {
   const day = await api(`/api/attendance/day?date=${date}`);
 
-  // pendingAbsenceType is only set while the user has clicked a toggle but not yet saved it;
-  // omit it (undefined) to fall back to the day's actual saved absence type.
-  function render(day, editingId, pendingAbsenceType) {
-    const absenceSelected = pendingAbsenceType !== undefined
-      ? pendingAbsenceType
-      : (day.absence ? day.absence.type : null);
-    const noteValue = day.absence && day.absence.note ? day.absence.note : '';
+  const initialType = day.absence ? day.absence.type : 'attendance';
+  const initialWholeDay = day.absence ? day.events.length === 0 : false;
+  const firstIn = day.events.find(e => e.type === 'in');
+  const lastOutList = day.events.filter(e => e.type === 'out');
+  const lastOut = lastOutList[lastOutList.length - 1];
+  const initialEntry = firstIn ? fmtTime(firstIn.ts) : '08:00';
+  const initialExit = lastOut ? fmtTime(lastOut.ts) : '17:00';
+  const initialNote = day.absence && day.absence.note ? day.absence.note : '';
 
-    const rows = day.events.map(ev => {
-      if (ev.id === editingId) {
-        return `
-          <li>
-            <input type="time" id="edit-time-${ev.id}" value="${fmtTime(ev.ts)}" />
-            <span class="ev-type ${ev.type}">${ev.type === 'in' ? 'כניסה' : 'יציאה'}</span>
-            <span class="ev-actions">
-              <button class="ev-del ev-save" data-id="${ev.id}">✓</button>
-            </span>
-          </li>`;
-      }
-      return `
-        <li>
-          <span>${fmtTime(ev.ts)} ${ev.source === 'manual' ? '(ידני)' : ''}</span>
-          <span class="ev-type ${ev.type}">${ev.type === 'in' ? 'כניסה' : 'יציאה'}</span>
-          <span class="ev-actions">
-            <button class="ev-del ev-edit" data-id="${ev.id}">✎</button>
-            <button class="ev-del ev-remove" data-id="${ev.id}">✕</button>
-          </span>
-        </li>`;
-    }).join('') || '<li>אין דיווחי נוכחות ביום זה</li>';
+  const typeOptions = [
+    { value: 'attendance', label: 'נוכחות' },
+    { value: 'vacation', label: ABSENCE_META.vacation.label },
+    { value: 'sick', label: ABSENCE_META.sick.label },
+    { value: 'child_sick', label: ABSENCE_META.child_sick.label },
+    { value: 'spouse_sick', label: ABSENCE_META.spouse_sick.label },
+    { value: 'conference', label: ABSENCE_META.conference.label }
+  ].map(o => `<option value="${o.value}" ${o.value === initialType ? 'selected' : ''}>${o.label}</option>`).join('');
 
-    openModal(`
-      <h2>${date}</h2>
-
-      <div class="modal-section-title">היעדרות</div>
-      <div class="modal-row">
-        <button class="modal-btn vacation ${absenceSelected === 'vacation' ? 'selected vacation' : ''}" id="opt-vacation">חופשה</button>
-        <button class="modal-btn sick ${absenceSelected === 'sick' ? 'selected sick' : ''}" id="opt-sick">מחלה</button>
+  openModal(`
+    <h2>${date}</h2>
+    <select class="report-select" id="report-type">${typeOptions}</select>
+    <label class="whole-day-toggle">
+      <input type="checkbox" id="report-whole-day" ${initialWholeDay ? 'checked' : ''} />
+      <span>יום שלם</span>
+    </label>
+    <div class="time-row" id="report-time-row">
+      <div class="time-field">
+        <label>שעת כניסה</label>
+        <input type="time" id="report-entry" value="${initialEntry}" />
       </div>
-      <textarea id="absence-note" placeholder="הערה (לא חובה)">${noteValue}</textarea>
-      <div class="modal-actions">
-        ${day.absence ? '<button class="modal-danger" id="absence-clear">נקה היעדרות</button>' : ''}
-        <button class="modal-primary" id="absence-save">שמירת היעדרות</button>
+      <div class="time-field">
+        <label>שעת יציאה</label>
+        <input type="time" id="report-exit" value="${initialExit}" />
       </div>
+    </div>
+    <textarea id="report-note" placeholder="הערה (לא חובה)">${initialNote}</textarea>
+    <div class="modal-actions">
+      <button class="modal-secondary" id="report-cancel">ביטול</button>
+      <button class="modal-primary" id="report-save">שמירה</button>
+    </div>
+  `);
 
-      <div class="modal-section-title">דיווחי נוכחות</div>
-      <ul class="event-list">${rows}</ul>
-      <div class="add-event-row">
-        <select id="new-ev-type">
-          <option value="in">כניסה</option>
-          <option value="out">יציאה</option>
-        </select>
-        <input type="time" id="new-ev-time" value="08:00" />
-        <button class="modal-primary" id="new-ev-add" style="flex:0 0 auto; padding:10px 16px;">הוסף</button>
-      </div>
-
-      <div class="modal-actions">
-        <button class="modal-secondary" id="update-close">סגירה</button>
-      </div>
-    `);
-
-    document.getElementById('opt-vacation').addEventListener('click', () => render(day, null, 'vacation'));
-    document.getElementById('opt-sick').addEventListener('click', () => render(day, null, 'sick'));
-    const clearBtn = document.getElementById('absence-clear');
-    if (clearBtn) clearBtn.addEventListener('click', async () => {
-      await api(`/api/absences/${date}`, { method: 'DELETE' });
-      const fresh = await api(`/api/attendance/day?date=${date}`);
-      render(fresh, null);
-      updateCal.refresh();
-    });
-    document.getElementById('absence-save').addEventListener('click', async () => {
-      if (!absenceSelected) return;
-      const note = document.getElementById('absence-note').value.trim();
-      await api('/api/absences', { method: 'POST', body: JSON.stringify({ date, type: absenceSelected, note }) });
-      const fresh = await api(`/api/attendance/day?date=${date}`);
-      render(fresh, null);
-      updateCal.refresh();
-    });
-
-    modalEl.querySelectorAll('.ev-edit').forEach(btn => {
-      btn.addEventListener('click', () => render(day, Number(btn.dataset.id)));
-    });
-    modalEl.querySelectorAll('.ev-save').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const id = btn.dataset.id;
-        const time = document.getElementById(`edit-time-${id}`).value;
-        if (!time) return;
-        await api(`/api/attendance/event/${id}`, { method: 'PUT', body: JSON.stringify({ time }) });
-        const fresh = await api(`/api/attendance/day?date=${date}`);
-        render(fresh, null);
-        updateCal.refresh();
-      });
-    });
-    modalEl.querySelectorAll('.ev-remove').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        await api(`/api/attendance/event/${btn.dataset.id}`, { method: 'DELETE' });
-        const fresh = await api(`/api/attendance/day?date=${date}`);
-        render(fresh, null);
-        updateCal.refresh();
-      });
-    });
-    document.getElementById('new-ev-add').addEventListener('click', async () => {
-      const type = document.getElementById('new-ev-type').value;
-      const time = document.getElementById('new-ev-time').value;
-      if (!time) return;
-      await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type, time }) });
-      const fresh = await api(`/api/attendance/day?date=${date}`);
-      render(fresh, null);
-      updateCal.refresh();
-    });
-    document.getElementById('update-close').addEventListener('click', () => {
-      closeModal();
-      refreshStatus();
-    });
+  const wholeDayCheckbox = document.getElementById('report-whole-day');
+  const timeRow = document.getElementById('report-time-row');
+  function syncTimeRowVisibility() {
+    timeRow.style.display = wholeDayCheckbox.checked ? 'none' : 'flex';
   }
-  render(day, null);
+  syncTimeRowVisibility();
+  wholeDayCheckbox.addEventListener('change', syncTimeRowVisibility);
+
+  document.getElementById('report-cancel').addEventListener('click', closeModal);
+
+  document.getElementById('report-save').addEventListener('click', async () => {
+    const type = document.getElementById('report-type').value;
+    const wholeDay = wholeDayCheckbox.checked;
+    const entry = document.getElementById('report-entry').value;
+    const exit = document.getElementById('report-exit').value;
+    const note = document.getElementById('report-note').value.trim();
+
+    if (!wholeDay && (!entry || !exit)) {
+      alert('יש להזין שעת כניסה ושעת יציאה, או לסמן יום שלם');
+      return;
+    }
+
+    await api(`/api/attendance/day/${date}/events`, { method: 'DELETE' });
+
+    if (type === 'attendance') {
+      await api(`/api/absences/${date}`, { method: 'DELETE' });
+      if (wholeDay) {
+        const hours = standardHoursForDate(date);
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: '08:00' }) });
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'out', time: `${pad(8 + hours)}:00` }) });
+      } else {
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: entry }) });
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'out', time: exit }) });
+      }
+    } else {
+      await api('/api/absences', { method: 'POST', body: JSON.stringify({ date, type, note }) });
+      if (!wholeDay) {
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: entry }) });
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'out', time: exit }) });
+      }
+    }
+
+    closeModal();
+    updateCal.refresh();
+    refreshStatus();
+  });
 }
 
 /* ---------- analyzed sheet screen ---------- */
@@ -340,8 +317,9 @@ function createSheetController() {
       let note = '';
       let noteClass = '';
       if (day.absence) {
-        note = day.absence.type === 'vacation' ? 'חופשה' : 'מחלה';
-        noteClass = day.absence.type === 'vacation' ? 'note-vacation' : 'note-sick';
+        const meta = ABSENCE_META[day.absence.type] || { label: day.absence.type, group: 'vacation' };
+        note = meta.label;
+        noteClass = meta.group === 'sick' ? 'note-sick' : 'note-vacation';
       } else if (day.dayType === 'rest') {
         note = 'שבת';
       }
@@ -359,9 +337,12 @@ function createSheetController() {
         </tr>`;
     }).join('');
 
+    const absenceSummary = Object.entries(data.totals.absenceCounts)
+      .map(([type, count]) => `${count} ${(ABSENCE_META[type] || { label: type }).label}`)
+      .join(', ');
     tfoot.innerHTML = `
       <tr>
-        <td colspan="4">סה"כ (${data.totals.vacationDays} חופשה, ${data.totals.sickDays} מחלה)</td>
+        <td colspan="4">סה"כ${absenceSummary ? ` (${absenceSummary})` : ''}</td>
         <td>${hoursCell(data.totals.regular)}</td>
         <td>${hoursCell(data.totals.ot125)}</td>
         <td>${hoursCell(data.totals.ot150)}</td>

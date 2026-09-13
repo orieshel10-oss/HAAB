@@ -37,7 +37,7 @@ db.exec(`
     client_id INTEGER NOT NULL,
     employee_id INTEGER NOT NULL,
     date TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('vacation', 'sick')),
+    type TEXT NOT NULL CHECK (type IN ('vacation', 'sick', 'child_sick', 'spouse_sick', 'conference')),
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(employee_id, date)

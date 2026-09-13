@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('node:path');
 const db = require('./db');
 const {
+  ABSENCE_TYPES,
   pad,
   toDateKey,
   nowIso,
@@ -74,8 +75,8 @@ app.get('/api/absences', (req, res) => {
 
 app.post('/api/absences', (req, res) => {
   const { date, type, note } = req.body || {};
-  if (!date || (type !== 'vacation' && type !== 'sick')) {
-    return res.status(400).json({ error: 'date and type ("vacation"|"sick") are required' });
+  if (!date || !ABSENCE_TYPES.includes(type)) {
+    return res.status(400).json({ error: `date and type (one of ${ABSENCE_TYPES.join(', ')}) are required` });
   }
   db.prepare(
     `INSERT INTO absences (client_id, employee_id, date, type, note)
@@ -141,7 +142,7 @@ app.get('/api/attendance/sheet', (req, res) => {
   absenceRows.forEach((a) => { absenceMap[a.date] = a; });
 
   const daysInMonth = new Date(year, month, 0).getDate();
-  const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, vacationDays: 0, sickDays: 0 };
+  const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, absenceCounts: {} };
   const days = [];
 
   for (let d = 1; d <= daysInMonth; d++) {
@@ -159,8 +160,7 @@ app.get('/api/attendance/sheet', (req, res) => {
     const outs = dayEvents.filter((e) => e.type === 'out');
     const lastOut = outs.length ? outs[outs.length - 1] : null;
 
-    if (absence && absence.type === 'vacation') totals.vacationDays++;
-    if (absence && absence.type === 'sick') totals.sickDays++;
+    if (absence) totals.absenceCounts[absence.type] = (totals.absenceCounts[absence.type] || 0) + 1;
     totals.regular += split.regular;
     totals.ot125 += split.ot125;
     totals.ot150 += split.ot150;
@@ -216,6 +216,16 @@ app.delete('/api/attendance/event/:id', (req, res) => {
     EMPLOYEE_ID
   );
   res.json({ ok: true });
+});
+
+app.delete('/api/attendance/day/:date/events', (req, res) => {
+  const date = req.params.date;
+  const ids = fetchEventsPadded(date, date)
+    .filter((ev) => toDateKey(ev.ts) === date)
+    .map((ev) => ev.id);
+  const del = db.prepare('DELETE FROM attendance_events WHERE id = ? AND employee_id = ?');
+  ids.forEach((id) => del.run(id, EMPLOYEE_ID));
+  res.json({ ok: true, deleted: ids.length });
 });
 
 const PORT = process.env.PORT || 3000;

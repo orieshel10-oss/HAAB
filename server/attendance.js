@@ -1,3 +1,5 @@
+const ABSENCE_TYPES = ['vacation', 'sick', 'child_sick', 'spouse_sick', 'conference'];
+
 function pad(n) {
   return String(n).padStart(2, '0');
 }
@@ -72,6 +74,7 @@ function splitDayMinutes(totalMinutes, dayType) {
 }
 
 module.exports = {
+  ABSENCE_TYPES,
   pad,
   toDateKey,
   nowIso,
