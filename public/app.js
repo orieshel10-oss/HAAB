@@ -1,4 +1,5 @@
 const WEEKDAYS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
+const WEEKDAYS_LONG = ['יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'שבת'];
 const MONTH_NAMES = [
   'ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני',
   'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'
@@ -24,9 +25,8 @@ async function api(path, options) {
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(`screen-${name}`).classList.add('active');
-  if (name === 'absence') absenceCal.refresh();
-  if (name === 'manual') manualCal.refresh();
-  if (name === 'reports') reportsCal.refresh();
+  if (name === 'update') updateCal.refresh();
+  if (name === 'sheet') sheetView.refresh();
 }
 
 document.querySelectorAll('[data-nav]').forEach(btn => {
@@ -92,6 +92,17 @@ async function clock(type) {
 btnIn.addEventListener('click', () => clock('in'));
 btnOut.addEventListener('click', () => clock('out'));
 
+/* ---------- digital clock ---------- */
+const clockTimeEl = document.getElementById('clock-time');
+const clockDateEl = document.getElementById('clock-date');
+function tickClock() {
+  const d = new Date();
+  clockTimeEl.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  clockDateEl.textContent = `${WEEKDAYS_LONG[d.getDay()]}, ${d.getDate()} ב${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+tickClock();
+setInterval(tickClock, 1000);
+
 /* ---------- generic calendar controller ---------- */
 function createCalendarController({ containerId, titleId, onRender, onDayClick }) {
   const container = document.getElementById(containerId);
@@ -155,93 +166,72 @@ async function loadSummaryMap(year, month) {
   return map;
 }
 
-/* ---------- absence screen ---------- */
-const absenceCal = createCalendarController({
-  containerId: 'absence-calendar',
-  titleId: 'absence-cal-title',
-  onRender: async (year, month) => {
-    const absences = await loadAbsenceMap(year, month);
-    const cellData = {};
-    Object.entries(absences).forEach(([ds, a]) => { cellData[ds] = { className: a.type }; });
-    return cellData;
-  },
-  onDayClick: openAbsenceModal
-});
-document.querySelector('[data-cal-prev="absence"]').addEventListener('click', () => absenceCal.setMonth(-1));
-document.querySelector('[data-cal-next="absence"]').addEventListener('click', () => absenceCal.setMonth(1));
-
-async function openAbsenceModal(date) {
-  const absences = await api(`/api/absences?year=${date.slice(0, 4)}&month=${Number(date.slice(5, 7))}`);
-  const existing = absences.find(a => a.date === date) || null;
-  let selected = existing ? existing.type : null;
-
-  function render() {
-    openModal(`
-      <h2>${date}</h2>
-      <div class="modal-row">
-        <button class="modal-btn vacation ${selected === 'vacation' ? 'selected vacation' : ''}" id="opt-vacation">חופשה</button>
-        <button class="modal-btn sick ${selected === 'sick' ? 'selected sick' : ''}" id="opt-sick">מחלה</button>
-      </div>
-      <textarea id="absence-note" placeholder="הערה (לא חובה)">${existing && existing.note ? existing.note : ''}</textarea>
-      <div class="modal-actions">
-        ${existing ? '<button class="modal-danger" id="absence-clear">נקה</button>' : ''}
-        <button class="modal-secondary" id="absence-cancel">ביטול</button>
-        <button class="modal-primary" id="absence-save">שמירה</button>
-      </div>
-    `);
-    document.getElementById('opt-vacation').addEventListener('click', () => { selected = 'vacation'; render(); });
-    document.getElementById('opt-sick').addEventListener('click', () => { selected = 'sick'; render(); });
-    document.getElementById('absence-cancel').addEventListener('click', closeModal);
-    const clearBtn = document.getElementById('absence-clear');
-    if (clearBtn) clearBtn.addEventListener('click', async () => {
-      await api(`/api/absences/${date}`, { method: 'DELETE' });
-      closeModal();
-      absenceCal.refresh();
-    });
-    document.getElementById('absence-save').addEventListener('click', async () => {
-      if (!selected) return;
-      const note = document.getElementById('absence-note').value.trim();
-      await api('/api/absences', { method: 'POST', body: JSON.stringify({ date, type: selected, note }) });
-      closeModal();
-      absenceCal.refresh();
-    });
-  }
-  render();
-}
-
-/* ---------- manual attendance screen ---------- */
-const manualCal = createCalendarController({
-  containerId: 'manual-calendar',
-  titleId: 'manual-cal-title',
+/* ---------- update-attendance screen (absence + manual entries + editing) ---------- */
+const updateCal = createCalendarController({
+  containerId: 'update-calendar',
+  titleId: 'update-cal-title',
   onRender: async (year, month) => {
     const [absences, summary] = await Promise.all([loadAbsenceMap(year, month), loadSummaryMap(year, month)]);
     const cellData = {};
-    Object.entries(absences).forEach(([ds, a]) => { cellData[ds] = { className: a.type }; });
     Object.entries(summary).forEach(([ds, s]) => {
       cellData[ds] = cellData[ds] || {};
       if (s.label) cellData[ds].hoursLabel = s.label;
     });
+    Object.entries(absences).forEach(([ds, a]) => {
+      cellData[ds] = { ...(cellData[ds] || {}), className: a.type };
+    });
     return cellData;
   },
-  onDayClick: openManualModal
+  onDayClick: openUpdateModal
 });
-document.querySelector('[data-cal-prev="manual"]').addEventListener('click', () => manualCal.setMonth(-1));
-document.querySelector('[data-cal-next="manual"]').addEventListener('click', () => manualCal.setMonth(1));
+document.querySelector('[data-cal-prev="update"]').addEventListener('click', () => updateCal.setMonth(-1));
+document.querySelector('[data-cal-next="update"]').addEventListener('click', () => updateCal.setMonth(1));
 
-async function openManualModal(date) {
+async function openUpdateModal(date) {
   const day = await api(`/api/attendance/day?date=${date}`);
+  let absenceSelected = day.absence ? day.absence.type : null;
 
-  function render(day) {
-    const rows = day.events.map(ev => `
-      <li>
-        <span>${fmtTime(ev.ts)} ${ev.source === 'manual' ? '(ידני)' : ''}</span>
-        <span class="ev-type ${ev.type}">${ev.type === 'in' ? 'כניסה' : 'יציאה'}</span>
-        <button class="ev-del" data-id="${ev.id}">✕</button>
-      </li>
-    `).join('') || '<li>אין דיווחים ביום זה</li>';
+  function render(day, editingId) {
+    absenceSelected = day.absence ? day.absence.type : absenceSelected;
+    const noteValue = day.absence && day.absence.note ? day.absence.note : '';
+
+    const rows = day.events.map(ev => {
+      if (ev.id === editingId) {
+        return `
+          <li>
+            <input type="time" id="edit-time-${ev.id}" value="${fmtTime(ev.ts)}" />
+            <span class="ev-type ${ev.type}">${ev.type === 'in' ? 'כניסה' : 'יציאה'}</span>
+            <span class="ev-actions">
+              <button class="ev-del ev-save" data-id="${ev.id}">✓</button>
+            </span>
+          </li>`;
+      }
+      return `
+        <li>
+          <span>${fmtTime(ev.ts)} ${ev.source === 'manual' ? '(ידני)' : ''}</span>
+          <span class="ev-type ${ev.type}">${ev.type === 'in' ? 'כניסה' : 'יציאה'}</span>
+          <span class="ev-actions">
+            <button class="ev-del ev-edit" data-id="${ev.id}">✎</button>
+            <button class="ev-del ev-remove" data-id="${ev.id}">✕</button>
+          </span>
+        </li>`;
+    }).join('') || '<li>אין דיווחי נוכחות ביום זה</li>';
 
     openModal(`
       <h2>${date}</h2>
+
+      <div class="modal-section-title">היעדרות</div>
+      <div class="modal-row">
+        <button class="modal-btn vacation ${absenceSelected === 'vacation' ? 'selected vacation' : ''}" id="opt-vacation">חופשה</button>
+        <button class="modal-btn sick ${absenceSelected === 'sick' ? 'selected sick' : ''}" id="opt-sick">מחלה</button>
+      </div>
+      <textarea id="absence-note" placeholder="הערה (לא חובה)">${noteValue}</textarea>
+      <div class="modal-actions">
+        ${day.absence ? '<button class="modal-danger" id="absence-clear">נקה היעדרות</button>' : ''}
+        <button class="modal-primary" id="absence-save">שמירת היעדרות</button>
+      </div>
+
+      <div class="modal-section-title">דיווחי נוכחות</div>
       <ul class="event-list">${rows}</ul>
       <div class="add-event-row">
         <select id="new-ev-type">
@@ -251,17 +241,51 @@ async function openManualModal(date) {
         <input type="time" id="new-ev-time" value="08:00" />
         <button class="modal-primary" id="new-ev-add" style="flex:0 0 auto; padding:10px 16px;">הוסף</button>
       </div>
+
       <div class="modal-actions">
-        <button class="modal-secondary" id="manual-close">סגירה</button>
+        <button class="modal-secondary" id="update-close">סגירה</button>
       </div>
     `);
 
-    modalEl.querySelectorAll('.ev-del').forEach(btn => {
+    document.getElementById('opt-vacation').addEventListener('click', () => { absenceSelected = 'vacation'; render(day, null); });
+    document.getElementById('opt-sick').addEventListener('click', () => { absenceSelected = 'sick'; render(day, null); });
+    const clearBtn = document.getElementById('absence-clear');
+    if (clearBtn) clearBtn.addEventListener('click', async () => {
+      await api(`/api/absences/${date}`, { method: 'DELETE' });
+      absenceSelected = null;
+      const fresh = await api(`/api/attendance/day?date=${date}`);
+      render(fresh, null);
+      updateCal.refresh();
+    });
+    document.getElementById('absence-save').addEventListener('click', async () => {
+      if (!absenceSelected) return;
+      const note = document.getElementById('absence-note').value.trim();
+      await api('/api/absences', { method: 'POST', body: JSON.stringify({ date, type: absenceSelected, note }) });
+      const fresh = await api(`/api/attendance/day?date=${date}`);
+      render(fresh, null);
+      updateCal.refresh();
+    });
+
+    modalEl.querySelectorAll('.ev-edit').forEach(btn => {
+      btn.addEventListener('click', () => render(day, Number(btn.dataset.id)));
+    });
+    modalEl.querySelectorAll('.ev-save').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        const time = document.getElementById(`edit-time-${id}`).value;
+        if (!time) return;
+        await api(`/api/attendance/event/${id}`, { method: 'PUT', body: JSON.stringify({ time }) });
+        const fresh = await api(`/api/attendance/day?date=${date}`);
+        render(fresh, null);
+        updateCal.refresh();
+      });
+    });
+    modalEl.querySelectorAll('.ev-remove').forEach(btn => {
       btn.addEventListener('click', async () => {
         await api(`/api/attendance/event/${btn.dataset.id}`, { method: 'DELETE' });
         const fresh = await api(`/api/attendance/day?date=${date}`);
-        render(fresh);
-        manualCal.refresh();
+        render(fresh, null);
+        updateCal.refresh();
       });
     });
     document.getElementById('new-ev-add').addEventListener('click', async () => {
@@ -270,63 +294,90 @@ async function openManualModal(date) {
       if (!time) return;
       await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type, time }) });
       const fresh = await api(`/api/attendance/day?date=${date}`);
-      render(fresh);
-      manualCal.refresh();
+      render(fresh, null);
+      updateCal.refresh();
     });
-    document.getElementById('manual-close').addEventListener('click', () => {
+    document.getElementById('update-close').addEventListener('click', () => {
       closeModal();
       refreshStatus();
     });
   }
-  render(day);
+  render(day, null);
 }
 
-/* ---------- reports screen ---------- */
-const reportsCal = createCalendarController({
-  containerId: 'reports-calendar',
-  titleId: 'reports-cal-title',
-  onRender: async (year, month) => {
-    const [absences, summary] = await Promise.all([loadAbsenceMap(year, month), loadSummaryMap(year, month)]);
-    const cellData = {};
-    Object.entries(summary).forEach(([ds, s]) => {
-      if (s.label) cellData[ds] = { hoursLabel: s.label };
-    });
-    Object.entries(absences).forEach(([ds, a]) => {
-      cellData[ds] = { ...(cellData[ds] || {}), className: a.type };
-    });
-    return cellData;
-  },
-  onDayClick: openReportModal
-});
-document.querySelector('[data-cal-prev="reports"]').addEventListener('click', () => reportsCal.setMonth(-1));
-document.querySelector('[data-cal-next="reports"]').addEventListener('click', () => reportsCal.setMonth(1));
+/* ---------- analyzed sheet screen ---------- */
+function createSheetController() {
+  const titleEl = document.getElementById('sheet-cal-title');
+  const tbody = document.getElementById('sheet-tbody');
+  const tfoot = document.getElementById('sheet-tfoot');
+  const state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
 
-async function openReportModal(date) {
-  const day = await api(`/api/attendance/day?date=${date}`);
-  const rows = day.events.map(ev => `
-    <li>
-      <span>${fmtTime(ev.ts)}</span>
-      <span class="ev-type ${ev.type}">${ev.type === 'in' ? 'כניסה' : 'יציאה'}</span>
-    </li>
-  `).join('') || '<li>אין דיווחי נוכחות ביום זה</li>';
+  function setMonth(delta) {
+    state.month += delta;
+    if (state.month > 12) { state.month = 1; state.year++; }
+    if (state.month < 1) { state.month = 12; state.year--; }
+    refresh();
+  }
 
-  const absenceLine = day.absence
-    ? `<div class="summary-line">${day.absence.type === 'vacation' ? 'חופשה' : 'מחלה'}${day.absence.note ? ' – ' + day.absence.note : ''}</div>`
-    : '';
-  const totalH = Math.floor(day.minutes / 60);
-  const totalM = day.minutes % 60;
-  const totalLine = day.minutes ? `<div class="summary-line">סה"כ שעות: ${totalH}:${pad(totalM)}</div>` : '';
+  async function refresh() {
+    titleEl.textContent = `${MONTH_NAMES[state.month - 1]} ${state.year}`;
+    const data = await api(`/api/attendance/sheet?year=${state.year}&month=${state.month}`);
+    render(data);
+  }
 
-  openModal(`
-    <h2>${date}</h2>
-    ${absenceLine}
-    ${totalLine}
-    <ul class="event-list">${rows}</ul>
-    <div class="modal-actions">
-      <button class="modal-secondary" id="report-close">סגירה</button>
-    </div>
-  `);
-  document.getElementById('report-close').addEventListener('click', closeModal);
+  function hoursCell(minutes) {
+    return minutes ? minutesToLabel(minutes) : '';
+  }
+
+  function render(data) {
+    const today = todayStr();
+    tbody.innerHTML = data.days.map(day => {
+      const rowClasses = [];
+      if (day.date === today) rowClasses.push('today');
+      if (day.dayType === 'rest') rowClasses.push('rest-day');
+      let note = '';
+      let noteClass = '';
+      if (day.absence) {
+        note = day.absence.type === 'vacation' ? 'חופשה' : 'מחלה';
+        noteClass = day.absence.type === 'vacation' ? 'note-vacation' : 'note-sick';
+      } else if (day.dayType === 'rest') {
+        note = 'שבת';
+      }
+      return `
+        <tr class="${rowClasses.join(' ')}">
+          <td>${Number(day.date.slice(8, 10))}</td>
+          <td>${WEEKDAYS[day.weekday]}</td>
+          <td>${day.firstIn ? fmtTime(day.firstIn) : ''}</td>
+          <td>${day.lastOut ? fmtTime(day.lastOut) : ''}</td>
+          <td>${hoursCell(day.minutes.regular)}</td>
+          <td>${hoursCell(day.minutes.ot125)}</td>
+          <td>${hoursCell(day.minutes.ot150)}</td>
+          <td>${hoursCell(day.minutes.shabbat)}</td>
+          <td class="${noteClass}">${note}</td>
+        </tr>`;
+    }).join('');
+
+    tfoot.innerHTML = `
+      <tr>
+        <td colspan="4">סה"כ (${data.totals.vacationDays} חופשה, ${data.totals.sickDays} מחלה)</td>
+        <td>${hoursCell(data.totals.regular)}</td>
+        <td>${hoursCell(data.totals.ot125)}</td>
+        <td>${hoursCell(data.totals.ot150)}</td>
+        <td>${hoursCell(data.totals.shabbat)}</td>
+        <td></td>
+      </tr>`;
+  }
+
+  return { refresh, setMonth };
+}
+const sheetView = createSheetController();
+document.querySelector('[data-cal-prev="sheet"]').addEventListener('click', () => sheetView.setMonth(-1));
+document.querySelector('[data-cal-next="sheet"]').addEventListener('click', () => sheetView.setMonth(1));
+
+function minutesToLabel(minutes) {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${h}:${pad(m)}`;
 }
 
 /* ---------- init ---------- */

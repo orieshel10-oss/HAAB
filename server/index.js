@@ -1,7 +1,16 @@
 const express = require('express');
 const path = require('node:path');
 const db = require('./db');
-const { toDateKey, nowIso, computeMinutes, minutesToLabel } = require('./attendance');
+const {
+  pad,
+  toDateKey,
+  nowIso,
+  computeMinutes,
+  minutesToLabel,
+  shiftDateStr,
+  dayTypeFromDate,
+  splitDayMinutes
+} = require('./attendance');
 
 const app = express();
 app.use(express.json());
@@ -16,6 +25,19 @@ function monthRange(year, month) {
   const endDate = new Date(year, month, 0).getDate();
   const end = `${year}-${String(month).padStart(2, '0')}-${String(endDate).padStart(2, '0')}`;
   return { start, end };
+}
+
+// Stored timestamps are UTC while the app deals in local (Israel) calendar dates, so a plain
+// UTC-string range can miss/misfile events near local midnight. Fetch a 1-day-padded UTC window
+// and let callers group/filter by local toDateKey instead of trusting the UTC date boundary.
+function fetchEventsPadded(startDate, endDate) {
+  const paddedStart = shiftDateStr(startDate, -1);
+  const paddedEnd = shiftDateStr(endDate, 1);
+  return db
+    .prepare(
+      'SELECT id, type, ts, source FROM attendance_events WHERE employee_id = ? AND ts >= ? AND ts <= ? ORDER BY ts'
+    )
+    .all(EMPLOYEE_ID, `${paddedStart}T00:00:00.000Z`, `${paddedEnd}T23:59:59.999Z`);
 }
 
 app.get('/api/status', (req, res) => {
@@ -71,15 +93,12 @@ app.get('/api/attendance/summary', (req, res) => {
   const year = Number(req.query.year);
   const month = Number(req.query.month);
   const { start, end } = monthRange(year, month);
-  const events = db
-    .prepare(
-      'SELECT type, ts FROM attendance_events WHERE employee_id = ? AND ts >= ? AND ts < ? ORDER BY ts'
-    )
-    .all(EMPLOYEE_ID, `${start}T00:00:00.000Z`, `${end}T23:59:59.999Z`);
+  const events = fetchEventsPadded(start, end);
 
   const byDay = {};
   for (const ev of events) {
     const key = toDateKey(ev.ts);
+    if (key < start || key > end) continue;
     (byDay[key] = byDay[key] || []).push(ev);
   }
   const result = Object.entries(byDay).map(([date, evs]) => {
@@ -92,15 +111,68 @@ app.get('/api/attendance/summary', (req, res) => {
 app.get('/api/attendance/day', (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
-  const events = db
-    .prepare(
-      "SELECT id, type, ts, source FROM attendance_events WHERE employee_id = ? AND date(ts) = date(?) ORDER BY ts"
-    )
-    .all(EMPLOYEE_ID, date);
+  const events = fetchEventsPadded(date, date)
+    .filter((ev) => toDateKey(ev.ts) === date)
+    .map((ev) => ({ id: ev.id, type: ev.type, ts: ev.ts, source: ev.source }));
   const absence = db
     .prepare('SELECT type, note FROM absences WHERE employee_id = ? AND date = ?')
     .get(EMPLOYEE_ID, date);
   res.json({ events, absence: absence || null, minutes: computeMinutes(events) });
+});
+
+app.get('/api/attendance/sheet', (req, res) => {
+  const year = Number(req.query.year);
+  const month = Number(req.query.month);
+  const { start, end } = monthRange(year, month);
+
+  const rawEvents = fetchEventsPadded(start, end);
+  const byDay = {};
+  for (const ev of rawEvents) {
+    const key = toDateKey(ev.ts);
+    if (key < start || key > end) continue;
+    (byDay[key] = byDay[key] || []).push(ev);
+  }
+
+  const absenceRows = db
+    .prepare('SELECT date, type, note FROM absences WHERE employee_id = ? AND date BETWEEN ? AND ?')
+    .all(EMPLOYEE_ID, start, end);
+  const absenceMap = {};
+  absenceRows.forEach((a) => { absenceMap[a.date] = a; });
+
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, vacationDays: 0, sickDays: 0 };
+  const days = [];
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = `${year}-${pad(month)}-${pad(d)}`;
+    const dayEvents = byDay[ds] || [];
+    const minutes = computeMinutes(dayEvents);
+    const dayType = dayTypeFromDate(year, month, d);
+    const split = splitDayMinutes(minutes, dayType);
+    const firstIn = dayEvents.find((e) => e.type === 'in') || null;
+    const outs = dayEvents.filter((e) => e.type === 'out');
+    const lastOut = outs.length ? outs[outs.length - 1] : null;
+    const absence = absenceMap[ds] || null;
+
+    if (absence && absence.type === 'vacation') totals.vacationDays++;
+    if (absence && absence.type === 'sick') totals.sickDays++;
+    totals.regular += split.regular;
+    totals.ot125 += split.ot125;
+    totals.ot150 += split.ot150;
+    totals.shabbat += split.shabbat;
+
+    days.push({
+      date: ds,
+      weekday: new Date(year, month - 1, d).getDay(),
+      dayType,
+      firstIn: firstIn ? firstIn.ts : null,
+      lastOut: lastOut ? lastOut.ts : null,
+      minutes: split,
+      absence
+    });
+  }
+
+  res.json({ days, totals });
 });
 
 app.post('/api/attendance/manual', (req, res) => {
@@ -115,6 +187,22 @@ app.post('/api/attendance/manual', (req, res) => {
     )
     .run(CLIENT_ID, EMPLOYEE_ID, type, ts, 'manual').lastInsertRowid;
   res.json({ id, type, ts });
+});
+
+app.put('/api/attendance/event/:id', (req, res) => {
+  const { time } = req.body || {};
+  if (!time) return res.status(400).json({ error: 'time is required' });
+  const ev = db
+    .prepare('SELECT ts FROM attendance_events WHERE id = ? AND employee_id = ?')
+    .get(Number(req.params.id), EMPLOYEE_ID);
+  if (!ev) return res.status(404).json({ error: 'not found' });
+  const dateKey = toDateKey(ev.ts);
+  const ts = new Date(`${dateKey}T${time}:00`).toISOString();
+  db.prepare("UPDATE attendance_events SET ts = ?, source = 'manual' WHERE id = ?").run(
+    ts,
+    Number(req.params.id)
+  );
+  res.json({ ok: true, ts });
 });
 
 app.delete('/api/attendance/event/:id', (req, res) => {

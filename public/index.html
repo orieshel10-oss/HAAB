@@ -19,6 +19,11 @@
       <h1>נוכחות</h1>
     </header>
     <div class="content">
+      <div class="clock-card">
+        <div class="clock-time" id="clock-time">--:--:--</div>
+        <div class="clock-date" id="clock-date"></div>
+      </div>
+
       <div class="status-card" id="status-card">
         <div class="status-dot" id="status-dot"></div>
         <div class="status-text" id="status-text">טוען...</div>
@@ -37,38 +42,33 @@
       </div>
 
       <nav class="menu-list">
-        <button class="menu-item" data-nav="absence">
-          <span class="menu-icon">🗓️</span>
-          <span class="menu-label">דיווח היעדרות</span>
+        <button class="menu-item" data-nav="update">
+          <span class="menu-icon">📝</span>
+          <span class="menu-label">עדכון נוכחות</span>
           <span class="menu-arrow">‹</span>
         </button>
-        <button class="menu-item" data-nav="manual">
-          <span class="menu-icon">🕒</span>
-          <span class="menu-label">השלמת נוכחות</span>
-          <span class="menu-arrow">‹</span>
-        </button>
-        <button class="menu-item" data-nav="reports">
+        <button class="menu-item" data-nav="sheet">
           <span class="menu-icon">📊</span>
-          <span class="menu-label">צפייה בדיווחים</span>
+          <span class="menu-label">גליון מנותח</span>
           <span class="menu-arrow">‹</span>
         </button>
       </nav>
     </div>
   </section>
 
-  <!-- מסך דיווח היעדרות -->
-  <section class="screen" id="screen-absence">
+  <!-- מסך עדכון נוכחות: מאחד דיווח היעדרות + השלמת נוכחות + עדכון דיווחים קיימים -->
+  <section class="screen" id="screen-update">
     <header class="topbar">
       <button class="back-btn" data-back>›</button>
-      <h1>דיווח היעדרות</h1>
+      <h1>עדכון נוכחות</h1>
     </header>
     <div class="content">
       <div class="cal-nav">
-        <button class="cal-nav-btn" data-cal-prev="absence">›</button>
-        <div class="cal-title" id="absence-cal-title"></div>
-        <button class="cal-nav-btn" data-cal-next="absence">‹</button>
+        <button class="cal-nav-btn" data-cal-prev="update">›</button>
+        <div class="cal-title" id="update-cal-title"></div>
+        <button class="cal-nav-btn" data-cal-next="update">‹</button>
       </div>
-      <div class="calendar" id="absence-calendar"></div>
+      <div class="calendar" id="update-calendar"></div>
       <div class="legend">
         <span class="legend-item"><i class="dot vacation"></i> חופשה</span>
         <span class="legend-item"><i class="dot sick"></i> מחלה</span>
@@ -76,39 +76,38 @@
     </div>
   </section>
 
-  <!-- מסך השלמת נוכחות -->
-  <section class="screen" id="screen-manual">
+  <!-- מסך גליון מנותח: פריסת שעות לפי חוק + היעדרויות -->
+  <section class="screen" id="screen-sheet">
     <header class="topbar">
       <button class="back-btn" data-back>›</button>
-      <h1>השלמת נוכחות</h1>
+      <h1>גליון מנותח</h1>
     </header>
     <div class="content">
       <div class="cal-nav">
-        <button class="cal-nav-btn" data-cal-prev="manual">›</button>
-        <div class="cal-title" id="manual-cal-title"></div>
-        <button class="cal-nav-btn" data-cal-next="manual">‹</button>
+        <button class="cal-nav-btn" data-cal-prev="sheet">›</button>
+        <div class="cal-title" id="sheet-cal-title"></div>
+        <button class="cal-nav-btn" data-cal-next="sheet">‹</button>
       </div>
-      <div class="calendar" id="manual-calendar"></div>
-    </div>
-  </section>
-
-  <!-- מסך צפייה בדיווחים -->
-  <section class="screen" id="screen-reports">
-    <header class="topbar">
-      <button class="back-btn" data-back>›</button>
-      <h1>צפייה בדיווחים</h1>
-    </header>
-    <div class="content">
-      <div class="cal-nav">
-        <button class="cal-nav-btn" data-cal-prev="reports">›</button>
-        <div class="cal-title" id="reports-cal-title"></div>
-        <button class="cal-nav-btn" data-cal-next="reports">‹</button>
+      <div class="sheet-table-wrap">
+        <table class="sheet-table">
+          <thead>
+            <tr>
+              <th>תאריך</th>
+              <th>יום</th>
+              <th>כניסה</th>
+              <th>יציאה</th>
+              <th>רגילות</th>
+              <th>125%</th>
+              <th>150%</th>
+              <th>שבת</th>
+              <th>הערה</th>
+            </tr>
+          </thead>
+          <tbody id="sheet-tbody"></tbody>
+          <tfoot id="sheet-tfoot"></tfoot>
+        </table>
       </div>
-      <div class="calendar calendar-report" id="reports-calendar"></div>
-      <div class="legend">
-        <span class="legend-item"><i class="dot vacation"></i> חופשה</span>
-        <span class="legend-item"><i class="dot sick"></i> מחלה</span>
-      </div>
+      <p class="sheet-note">* ניתוח אחיד לפי חוק שעות עבודה ומנוחה (יום עבודה 8 שעות, 7 שעות בערב שבת, 125%/150% על שעות נוספות), בהנחה ששבת הוא יום המנוחה. בהמשך הניתוח יתחשב בהסכם הנוכחות האישי של כל עובד.</p>
     </div>
   </section>
 
