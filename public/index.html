@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>נוכחות</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- מסך ראשי -->
+  <section class="screen active" id="screen-home">
+    <header class="topbar">
+      <h1>נוכחות</h1>
+    </header>
+    <div class="content">
+      <div class="status-card" id="status-card">
+        <div class="status-dot" id="status-dot"></div>
+        <div class="status-text" id="status-text">טוען...</div>
+        <div class="status-sub" id="status-sub"></div>
+      </div>
+
+      <div class="clock-buttons">
+        <button class="clock-btn in" id="btn-in">
+          <span class="clock-btn-icon">↓</span>
+          <span>כניסה</span>
+        </button>
+        <button class="clock-btn out" id="btn-out">
+          <span class="clock-btn-icon">↑</span>
+          <span>יציאה</span>
+        </button>
+      </div>
+
+      <nav class="menu-list">
+        <button class="menu-item" data-nav="absence">
+          <span class="menu-icon">🗓️</span>
+          <span class="menu-label">דיווח היעדרות</span>
+          <span class="menu-arrow">‹</span>
+        </button>
+        <button class="menu-item" data-nav="manual">
+          <span class="menu-icon">🕒</span>
+          <span class="menu-label">השלמת נוכחות</span>
+          <span class="menu-arrow">‹</span>
+        </button>
+        <button class="menu-item" data-nav="reports">
+          <span class="menu-icon">📊</span>
+          <span class="menu-label">צפייה בדיווחים</span>
+          <span class="menu-arrow">‹</span>
+        </button>
+      </nav>
+    </div>
+  </section>
+
+  <!-- מסך דיווח היעדרות -->
+  <section class="screen" id="screen-absence">
+    <header class="topbar">
+      <button class="back-btn" data-back>›</button>
+      <h1>דיווח היעדרות</h1>
+    </header>
+    <div class="content">
+      <div class="cal-nav">
+        <button class="cal-nav-btn" data-cal-prev="absence">›</button>
+        <div class="cal-title" id="absence-cal-title"></div>
+        <button class="cal-nav-btn" data-cal-next="absence">‹</button>
+      </div>
+      <div class="calendar" id="absence-calendar"></div>
+      <div class="legend">
+        <span class="legend-item"><i class="dot vacation"></i> חופשה</span>
+        <span class="legend-item"><i class="dot sick"></i> מחלה</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- מסך השלמת נוכחות -->
+  <section class="screen" id="screen-manual">
+    <header class="topbar">
+      <button class="back-btn" data-back>›</button>
+      <h1>השלמת נוכחות</h1>
+    </header>
+    <div class="content">
+      <div class="cal-nav">
+        <button class="cal-nav-btn" data-cal-prev="manual">›</button>
+        <div class="cal-title" id="manual-cal-title"></div>
+        <button class="cal-nav-btn" data-cal-next="manual">‹</button>
+      </div>
+      <div class="calendar" id="manual-calendar"></div>
+    </div>
+  </section>
+
+  <!-- מסך צפייה בדיווחים -->
+  <section class="screen" id="screen-reports">
+    <header class="topbar">
+      <button class="back-btn" data-back>›</button>
+      <h1>צפייה בדיווחים</h1>
+    </header>
+    <div class="content">
+      <div class="cal-nav">
+        <button class="cal-nav-btn" data-cal-prev="reports">›</button>
+        <div class="cal-title" id="reports-cal-title"></div>
+        <button class="cal-nav-btn" data-cal-next="reports">‹</button>
+      </div>
+      <div class="calendar calendar-report" id="reports-calendar"></div>
+      <div class="legend">
+        <span class="legend-item"><i class="dot vacation"></i> חופשה</span>
+        <span class="legend-item"><i class="dot sick"></i> מחלה</span>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="modal-overlay hidden" id="modal-overlay">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
