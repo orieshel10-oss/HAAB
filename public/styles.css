@@ -54,6 +54,9 @@ html, body {
   color: #fff;
 }
 .topbar h1 { font-size: 19px; margin: 0; font-weight: 700; flex: 1; }
+.topbar-brand { justify-content: center; gap: 10px; }
+.topbar-brand h1 { flex: none; letter-spacing: 1px; }
+.brand-logo { width: 28px; height: 28px; border-radius: 8px; background: #fff; padding: 2px; }
 .back-btn {
   border: none;
   background: rgba(255,255,255,0.15);
