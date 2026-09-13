@@ -189,10 +189,13 @@ document.querySelector('[data-cal-next="update"]').addEventListener('click', () 
 
 async function openUpdateModal(date) {
   const day = await api(`/api/attendance/day?date=${date}`);
-  let absenceSelected = day.absence ? day.absence.type : null;
 
-  function render(day, editingId) {
-    absenceSelected = day.absence ? day.absence.type : absenceSelected;
+  // pendingAbsenceType is only set while the user has clicked a toggle but not yet saved it;
+  // omit it (undefined) to fall back to the day's actual saved absence type.
+  function render(day, editingId, pendingAbsenceType) {
+    const absenceSelected = pendingAbsenceType !== undefined
+      ? pendingAbsenceType
+      : (day.absence ? day.absence.type : null);
     const noteValue = day.absence && day.absence.note ? day.absence.note : '';
 
     const rows = day.events.map(ev => {
@@ -247,12 +250,11 @@ async function openUpdateModal(date) {
       </div>
     `);
 
-    document.getElementById('opt-vacation').addEventListener('click', () => { absenceSelected = 'vacation'; render(day, null); });
-    document.getElementById('opt-sick').addEventListener('click', () => { absenceSelected = 'sick'; render(day, null); });
+    document.getElementById('opt-vacation').addEventListener('click', () => render(day, null, 'vacation'));
+    document.getElementById('opt-sick').addEventListener('click', () => render(day, null, 'sick'));
     const clearBtn = document.getElementById('absence-clear');
     if (clearBtn) clearBtn.addEventListener('click', async () => {
       await api(`/api/absences/${date}`, { method: 'DELETE' });
-      absenceSelected = null;
       const fresh = await api(`/api/attendance/day?date=${date}`);
       render(fresh, null);
       updateCal.refresh();

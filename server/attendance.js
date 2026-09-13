@@ -50,6 +50,11 @@ function dayTypeFromDate(year, month, day) {
   return 'regular';
 }
 
+function standardDayMinutes(dayType) {
+  if (dayType === 'rest') return 0;
+  return dayType === 'shortened' ? 7 * 60 : 8 * 60;
+}
+
 // Splits a day's worked minutes into legal pay categories:
 // regular (100%), first 2 overtime hours (125%), further overtime (150%),
 // and hours worked on the weekly rest day (shabbat - requires special permit, paid at a premium).
@@ -74,5 +79,6 @@ module.exports = {
   minutesToLabel,
   shiftDateStr,
   dayTypeFromDate,
-  splitDayMinutes
+  splitDayMinutes,
+  standardDayMinutes
 };

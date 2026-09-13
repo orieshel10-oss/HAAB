@@ -9,7 +9,8 @@ const {
   minutesToLabel,
   shiftDateStr,
   dayTypeFromDate,
-  splitDayMinutes
+  splitDayMinutes,
+  standardDayMinutes
 } = require('./attendance');
 
 const app = express();
@@ -148,11 +149,15 @@ app.get('/api/attendance/sheet', (req, res) => {
     const dayEvents = byDay[ds] || [];
     const minutes = computeMinutes(dayEvents);
     const dayType = dayTypeFromDate(year, month, d);
-    const split = splitDayMinutes(minutes, dayType);
+    const absence = absenceMap[ds] || null;
+    // An absence with no clock events has no start/end time to go on - per policy, that
+    // means a full day off, credited as a full standard day rather than showing zero hours.
+    const split = (absence && minutes === 0)
+      ? { regular: standardDayMinutes(dayType), ot125: 0, ot150: 0, shabbat: 0 }
+      : splitDayMinutes(minutes, dayType);
     const firstIn = dayEvents.find((e) => e.type === 'in') || null;
     const outs = dayEvents.filter((e) => e.type === 'out');
     const lastOut = outs.length ? outs[outs.length - 1] : null;
-    const absence = absenceMap[ds] || null;
 
     if (absence && absence.type === 'vacation') totals.vacationDays++;
     if (absence && absence.type === 'sick') totals.sickDays++;

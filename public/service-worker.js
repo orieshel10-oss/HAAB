@@ -1,4 +1,4 @@
-const CACHE_NAME = 'attendance-shell-v1';
+const CACHE_NAME = 'attendance-shell-v2';
 const SHELL_FILES = [
   '/',
   '/index.html',
@@ -30,7 +30,15 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/')) {
     return; // always go to network for API calls
   }
+  // Network-first: while online, always serve the latest shell (app is under active
+  // development). Cache is only a fallback for offline use, and is kept fresh on every hit.
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
