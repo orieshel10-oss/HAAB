@@ -8,6 +8,7 @@
 <link rel="icon" href="../icons/icon-192.png" />
 <link rel="stylesheet" href="../styles.css" />
 <link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
 </head>
 <body>
 <div class="admin-wrap">
@@ -67,8 +68,8 @@
         <button class="btn btn-primary btn-small" id="new-sysadmin-btn">+ מנהל מערכת</button>
       </div>
       <table class="admin-table">
-        <thead><tr><th>שם</th><th>מייל</th><th>טלפון</th><th></th></tr></thead>
-        <tbody id="sysadmins-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+        <thead><tr><th>שם</th><th>מייל</th><th>טלפון</th><th colspan="2"></th></tr></thead>
+        <tbody id="sysadmins-tbody"><tr class="empty-row"><td colspan="5">טוען...</td></tr></tbody>
       </table>
       <form class="admin-form hidden" id="sysadmin-form">
         <div class="form-row">
@@ -77,11 +78,17 @@
         </div>
         <div class="form-row">
           <div><label>טלפון</label><input id="sa-phone" /></div>
-          <div><label>סיסמה</label><input id="sa-password" type="password" required /></div>
+          <div>
+            <label id="sa-password-label">סיסמה</label>
+            <div class="pw-wrap">
+              <input id="sa-password" type="password" />
+              <button type="button" id="sa-password-toggle" class="pw-toggle">👁</button>
+            </div>
+          </div>
         </div>
         <div class="form-msg" id="sysadmin-form-msg"></div>
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="submit" class="btn btn-primary" id="sysadmin-submit-btn">שמירה</button>
           <button type="button" class="btn btn-secondary" id="sysadmin-cancel-btn">ביטול</button>
         </div>
       </form>
@@ -94,7 +101,10 @@
   <div class="modal-card-simple">
     <h3>כניסה לארגון</h3>
     <p style="font-size:13px;color:var(--text-muted);margin:0 0 10px;">לאימות, הזינו את סיסמת הכניסה שלכם (אותה סיסמה שאיתה נכנסתם למערכת).</p>
-    <input type="password" id="enter-org-password" placeholder="הסיסמה שלכם" />
+    <div class="pw-wrap">
+      <input type="password" id="enter-org-password" placeholder="הסיסמה שלכם" />
+      <button type="button" id="enter-org-password-toggle" class="pw-toggle">👁</button>
+    </div>
     <div class="form-msg error" id="enter-org-msg"></div>
     <div class="form-actions">
       <button class="btn btn-primary" id="enter-org-confirm">כניסה</button>
@@ -107,7 +117,10 @@
   <div class="modal-card-simple">
     <h3>מחיקת ארגון</h3>
     <p style="font-size:13px;color:var(--red-dark);margin:0 0 10px;">פעולה זו תמחק לצמיתות את הארגון, כל העובדים בו וכל נתוני הנוכחות וההיעדרויות שלהם. לאימות, הזינו את סיסמת הכניסה שלכם.</p>
-    <input type="password" id="delete-org-password" placeholder="הסיסמה שלכם" />
+    <div class="pw-wrap">
+      <input type="password" id="delete-org-password" placeholder="הסיסמה שלכם" />
+      <button type="button" id="delete-org-password-toggle" class="pw-toggle">👁</button>
+    </div>
     <div class="form-msg error" id="delete-org-msg"></div>
     <div class="form-actions">
       <button class="btn btn-danger" id="delete-org-confirm">מחיקה סופית</button>
@@ -287,17 +300,24 @@ document.getElementById('delete-org-confirm').addEventListener('click', async ()
 });
 
 /* ---------- system admins ---------- */
+let sysAdminsCache = [];
+let editingSysAdminId = null;
+
 async function loadSysAdmins() {
-  const admins = await api('/api/system/system-admins');
+  sysAdminsCache = await api('/api/system/system-admins');
   const tbody = document.getElementById('sysadmins-tbody');
-  tbody.innerHTML = admins.map(a => `
+  tbody.innerHTML = sysAdminsCache.map(a => `
     <tr>
       <td>${a.name} ${a.is_root ? '<span class="badge badge-root">שורש</span>' : ''}</td>
       <td>${a.email}</td>
       <td>${a.phone || ''}</td>
+      <td><button class="btn btn-secondary btn-small edit-sysadmin-btn" data-id="${a.id}">עריכה</button></td>
       <td>${a.is_root ? '' : `<button class="btn btn-danger btn-small del-sysadmin-btn" data-id="${a.id}">מחיקה</button>`}</td>
     </tr>`).join('');
 
+  tbody.querySelectorAll('.edit-sysadmin-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEditSysAdmin(btn.dataset.id));
+  });
   tbody.querySelectorAll('.del-sysadmin-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('למחוק את מנהל המערכת הזה?')) return;
@@ -308,8 +328,48 @@ async function loadSysAdmins() {
 }
 
 const sysadminForm = document.getElementById('sysadmin-form');
-document.getElementById('new-sysadmin-btn').addEventListener('click', () => sysadminForm.classList.toggle('hidden'));
-document.getElementById('sysadmin-cancel-btn').addEventListener('click', () => sysadminForm.classList.add('hidden'));
+wirePasswordToggle('sa-password', 'sa-password-toggle');
+wirePasswordToggle('enter-org-password', 'enter-org-password-toggle');
+wirePasswordToggle('delete-org-password', 'delete-org-password-toggle');
+
+function resetSysAdminForm() {
+  editingSysAdminId = null;
+  sysadminForm.reset();
+  document.getElementById('sa-email').disabled = false;
+  document.getElementById('sa-password').required = true;
+  document.getElementById('sa-password-label').textContent = 'סיסמה';
+  document.getElementById('sysadmin-submit-btn').textContent = 'שמירה';
+}
+
+document.getElementById('new-sysadmin-btn').addEventListener('click', () => {
+  if (!sysadminForm.classList.contains('hidden') && editingSysAdminId === null) {
+    sysadminForm.classList.add('hidden');
+    return;
+  }
+  resetSysAdminForm();
+  sysadminForm.classList.remove('hidden');
+});
+document.getElementById('sysadmin-cancel-btn').addEventListener('click', () => {
+  resetSysAdminForm();
+  sysadminForm.classList.add('hidden');
+});
+
+function openEditSysAdmin(id) {
+  const a = sysAdminsCache.find(x => String(x.id) === String(id));
+  if (!a) return;
+  editingSysAdminId = a.id;
+  document.getElementById('sa-name').value = a.name || '';
+  document.getElementById('sa-email').value = a.email;
+  document.getElementById('sa-email').disabled = true;
+  document.getElementById('sa-phone').value = a.phone || '';
+  document.getElementById('sa-password').value = '';
+  document.getElementById('sa-password').required = false;
+  document.getElementById('sa-password-label').textContent = 'סיסמה חדשה (השאירו ריק כדי לא לשנות)';
+  document.getElementById('sysadmin-submit-btn').textContent = 'עדכון';
+  document.getElementById('sysadmin-form-msg').textContent = '';
+  sysadminForm.classList.remove('hidden');
+  sysadminForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 sysadminForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -317,19 +377,33 @@ sysadminForm.addEventListener('submit', async (e) => {
   msg.textContent = '';
   msg.className = 'form-msg';
   try {
-    const created = await api('/api/system/system-admins', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: document.getElementById('sa-name').value.trim(),
-        email: document.getElementById('sa-email').value.trim(),
-        phone: document.getElementById('sa-phone').value.trim(),
-        password: document.getElementById('sa-password').value
-      })
-    });
-    sysadminForm.reset();
-    sysadminForm.classList.add('hidden');
-    loadSysAdmins();
-    alert('מנהל המערכת נוצר. יש להעביר לו את קישור ההרשמה ל-Google Authenticator:\n\n' + created.totpEnrollUri);
+    if (editingSysAdminId) {
+      await api(`/api/system/system-admins/${editingSysAdminId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: document.getElementById('sa-name').value.trim(),
+          phone: document.getElementById('sa-phone').value.trim(),
+          password: document.getElementById('sa-password').value || undefined
+        })
+      });
+      resetSysAdminForm();
+      sysadminForm.classList.add('hidden');
+      loadSysAdmins();
+    } else {
+      const created = await api('/api/system/system-admins', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: document.getElementById('sa-name').value.trim(),
+          email: document.getElementById('sa-email').value.trim(),
+          phone: document.getElementById('sa-phone').value.trim(),
+          password: document.getElementById('sa-password').value
+        })
+      });
+      resetSysAdminForm();
+      sysadminForm.classList.add('hidden');
+      loadSysAdmins();
+      showLinkModal('קישור הרשמה ל-Google Authenticator עבור ' + created.email, created.totpEnrollUri);
+    }
   } catch (err) {
     msg.textContent = err.message === 'a system admin with this email already exists' ? 'כבר קיים מנהל מערכת עם המייל הזה' : err.message;
     msg.className = 'form-msg error';

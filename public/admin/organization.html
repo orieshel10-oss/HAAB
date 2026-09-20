@@ -8,6 +8,7 @@
 <link rel="icon" href="../icons/icon-192.png" />
 <link rel="stylesheet" href="../styles.css" />
 <link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
 </head>
 <body>
 <div class="admin-wrap">
@@ -25,8 +26,8 @@
         <button class="btn btn-primary btn-small" id="new-subOrg-btn">+ תת-ארגון</button>
       </div>
       <table class="admin-table">
-        <thead><tr><th>קוד</th><th>שם</th><th>סוג</th></tr></thead>
-        <tbody id="subOrgs-tbody"><tr class="empty-row"><td colspan="3">טוען...</td></tr></tbody>
+        <thead><tr><th>קוד</th><th>שם</th><th>סוג</th><th></th><th></th></tr></thead>
+        <tbody id="subOrgs-tbody"><tr class="empty-row"><td colspan="5">טוען...</td></tr></tbody>
       </table>
       <form class="admin-form hidden" id="subOrg-form">
         <div class="form-row">
@@ -43,7 +44,7 @@
         </div>
         <div class="form-msg" id="subOrg-form-msg"></div>
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="submit" class="btn btn-primary" id="subOrg-submit-btn">שמירה</button>
           <button type="button" class="btn btn-secondary" id="subOrg-cancel-btn">ביטול</button>
         </div>
       </form>
@@ -55,8 +56,8 @@
         <button class="btn btn-primary btn-small" id="new-admin-btn">+ מנהל</button>
       </div>
       <table class="admin-table">
-        <thead><tr><th>שם</th><th>מייל</th><th>סוג</th><th>תתי-ארגון מורשים</th></tr></thead>
-        <tbody id="admins-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+        <thead><tr><th>שם</th><th>מייל</th><th>סוג</th><th>תתי-ארגון מורשים</th><th></th><th></th></tr></thead>
+        <tbody id="admins-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
       </table>
       <form class="admin-form hidden" id="admin-form">
         <div class="form-row">
@@ -64,7 +65,13 @@
           <div><label>מייל</label><input id="oa-email" type="email" required /></div>
         </div>
         <div class="form-row">
-          <div><label>סיסמה</label><input id="oa-password" type="password" required /></div>
+          <div>
+            <label id="oa-password-label">סיסמה</label>
+            <div class="pw-wrap">
+              <input id="oa-password" type="password" />
+              <button type="button" id="oa-password-toggle" class="pw-toggle">👁</button>
+            </div>
+          </div>
           <div>
             <label>סוג הרשאה</label>
             <select id="oa-type">
@@ -79,12 +86,24 @@
         </div>
         <div class="form-msg" id="admin-form-msg"></div>
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="submit" class="btn btn-primary" id="admin-submit-btn">שמירה</button>
           <button type="button" class="btn btn-secondary" id="admin-cancel-btn">ביטול</button>
         </div>
       </form>
     </section>
 
+  </div>
+</div>
+
+<div class="modal-overlay-simple hidden" id="subOrg-blocked-overlay">
+  <div class="modal-card-simple">
+    <h3>לא ניתן למחוק</h3>
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 10px;" id="subOrg-blocked-text"></p>
+    <ul class="event-list" id="subOrg-blocked-employees" style="max-height:240px;overflow-y:auto;"></ul>
+    <p style="font-size:12px;color:var(--text-muted);margin:8px 0 0;">עריכת שיוך עובדים לתת-ארגון תהיה זמינה במסכי ניהול העובדים (בשלב הבא).</p>
+    <div class="form-actions">
+      <button class="btn btn-secondary" id="subOrg-blocked-close">סגירה</button>
+    </div>
   </div>
 </div>
 
@@ -97,21 +116,40 @@ async function api(path, options) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   if (res.status === 401) { window.location.href = 'login.html'; throw new Error('not authenticated'); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'error');
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
 const SUB_ORG_TYPE_LABELS = { factory_unit: 'תת מפעל', division: 'חטיבה', department: 'מחלקה' };
 const ADMIN_TYPE_LABELS = { org_admin: 'Org Admin', time_admin: 'Time Admin' };
 
+/* ---------- sub-organizations ---------- */
 let currentSubOrgs = [];
+let editingSubOrgId = null;
 
 async function loadSubOrgs() {
   currentSubOrgs = await api(`/api/system/organizations/${orgId}/sub-organizations`);
   const tbody = document.getElementById('subOrgs-tbody');
   tbody.innerHTML = currentSubOrgs.length ? currentSubOrgs.map(s => `
-    <tr><td>${s.sub_org_code}</td><td>${s.name}</td><td>${SUB_ORG_TYPE_LABELS[s.sub_org_type] || s.sub_org_type}</td></tr>
-  `).join('') : '<tr class="empty-row"><td colspan="3">אין תתי-ארגונים</td></tr>';
+    <tr>
+      <td>${s.sub_org_code}</td>
+      <td>${s.name}</td>
+      <td>${SUB_ORG_TYPE_LABELS[s.sub_org_type] || s.sub_org_type}</td>
+      <td><button class="btn btn-secondary btn-small edit-subOrg-btn" data-id="${s.id}">עריכה</button></td>
+      <td><button class="btn btn-danger btn-small delete-subOrg-btn" data-id="${s.id}">מחיקה</button></td>
+    </tr>
+  `).join('') : '<tr class="empty-row"><td colspan="5">אין תתי-ארגונים</td></tr>';
+
+  tbody.querySelectorAll('.edit-subOrg-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEditSubOrg(btn.dataset.id));
+  });
+  tbody.querySelectorAll('.delete-subOrg-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteSubOrg(btn.dataset.id));
+  });
 
   const list = document.getElementById('oa-subOrgs-list');
   list.innerHTML = currentSubOrgs.map(s => `
@@ -120,8 +158,40 @@ async function loadSubOrgs() {
 }
 
 const subOrgForm = document.getElementById('subOrg-form');
-document.getElementById('new-subOrg-btn').addEventListener('click', () => subOrgForm.classList.toggle('hidden'));
-document.getElementById('subOrg-cancel-btn').addEventListener('click', () => subOrgForm.classList.add('hidden'));
+
+function resetSubOrgForm() {
+  editingSubOrgId = null;
+  subOrgForm.reset();
+  document.getElementById('so-code').disabled = false;
+  document.getElementById('subOrg-submit-btn').textContent = 'שמירה';
+}
+
+document.getElementById('new-subOrg-btn').addEventListener('click', () => {
+  if (!subOrgForm.classList.contains('hidden') && editingSubOrgId === null) {
+    subOrgForm.classList.add('hidden');
+    return;
+  }
+  resetSubOrgForm();
+  subOrgForm.classList.remove('hidden');
+});
+document.getElementById('subOrg-cancel-btn').addEventListener('click', () => {
+  resetSubOrgForm();
+  subOrgForm.classList.add('hidden');
+});
+
+function openEditSubOrg(id) {
+  const s = currentSubOrgs.find(x => String(x.id) === String(id));
+  if (!s) return;
+  editingSubOrgId = s.id;
+  document.getElementById('so-code').value = s.sub_org_code;
+  document.getElementById('so-code').disabled = true;
+  document.getElementById('so-name').value = s.name || '';
+  document.getElementById('so-type').value = s.sub_org_type;
+  document.getElementById('subOrg-submit-btn').textContent = 'עדכון';
+  document.getElementById('subOrg-form-msg').textContent = '';
+  subOrgForm.classList.remove('hidden');
+  subOrgForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 subOrgForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -129,15 +199,25 @@ subOrgForm.addEventListener('submit', async (e) => {
   msg.textContent = '';
   msg.className = 'form-msg';
   try {
-    await api(`/api/system/organizations/${orgId}/sub-organizations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        subOrgCode: document.getElementById('so-code').value.trim(),
-        name: document.getElementById('so-name').value.trim(),
-        subOrgType: document.getElementById('so-type').value
-      })
-    });
-    subOrgForm.reset();
+    if (editingSubOrgId) {
+      await api(`/api/system/organizations/${orgId}/sub-organizations/${editingSubOrgId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: document.getElementById('so-name').value.trim(),
+          subOrgType: document.getElementById('so-type').value
+        })
+      });
+    } else {
+      await api(`/api/system/organizations/${orgId}/sub-organizations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          subOrgCode: document.getElementById('so-code').value.trim(),
+          name: document.getElementById('so-name').value.trim(),
+          subOrgType: document.getElementById('so-type').value
+        })
+      });
+    }
+    resetSubOrgForm();
     subOrgForm.classList.add('hidden');
     loadSubOrgs();
   } catch (err) {
@@ -146,25 +226,105 @@ subOrgForm.addEventListener('submit', async (e) => {
   }
 });
 
+async function deleteSubOrg(id) {
+  const s = currentSubOrgs.find(x => String(x.id) === String(id));
+  if (!s) return;
+  if (!confirm(`למחוק את תת-הארגון "${s.name}"?`)) return;
+  try {
+    await api(`/api/system/organizations/${orgId}/sub-organizations/${id}`, { method: 'DELETE' });
+    loadSubOrgs();
+  } catch (err) {
+    if (err.data && err.data.error === 'has_employees') {
+      document.getElementById('subOrg-blocked-text').textContent =
+        `יש ${err.data.count} עובדים המשויכים לתת-הארגון "${s.name}". לא ניתן למחוק אותו כל עוד יש עובדים משויכים אליו:`;
+      document.getElementById('subOrg-blocked-employees').innerHTML =
+        err.data.employees.map(e => `<li>${e.name}</li>`).join('');
+      document.getElementById('subOrg-blocked-overlay').classList.remove('hidden');
+    } else {
+      alert(err.message);
+    }
+  }
+}
+document.getElementById('subOrg-blocked-close').addEventListener('click', () => {
+  document.getElementById('subOrg-blocked-overlay').classList.add('hidden');
+});
+
+/* ---------- org admins / time admins ---------- */
+let currentAdmins = [];
+let editingAdminId = null;
+
 async function loadAdmins() {
-  const admins = await api(`/api/system/organizations/${orgId}/admins`);
+  currentAdmins = await api(`/api/system/organizations/${orgId}/admins`);
   const tbody = document.getElementById('admins-tbody');
-  tbody.innerHTML = admins.length ? admins.map(a => `
+  tbody.innerHTML = currentAdmins.length ? currentAdmins.map(a => `
     <tr>
       <td>${a.name}</td>
       <td>${a.email}</td>
       <td><span class="badge ${a.admin_type === 'time_admin' ? 'badge-time-admin' : 'badge-org-admin'}">${ADMIN_TYPE_LABELS[a.admin_type]}</span></td>
       <td>${(a.subOrganizations || []).map(s => s.name).join(', ') || '-'}</td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין עדיין מנהלים</td></tr>';
+      <td><button class="btn btn-secondary btn-small edit-admin-btn" data-id="${a.id}">עריכה</button></td>
+      <td><button class="btn btn-danger btn-small delete-admin-btn" data-id="${a.id}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="6">אין עדיין מנהלים</td></tr>';
+
+  tbody.querySelectorAll('.edit-admin-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEditAdmin(btn.dataset.id));
+  });
+  tbody.querySelectorAll('.delete-admin-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteAdmin(btn.dataset.id));
+  });
 }
 
 const adminForm = document.getElementById('admin-form');
-document.getElementById('new-admin-btn').addEventListener('click', () => adminForm.classList.toggle('hidden'));
-document.getElementById('admin-cancel-btn').addEventListener('click', () => adminForm.classList.add('hidden'));
+wirePasswordToggle('oa-password', 'oa-password-toggle');
+
+function resetAdminForm() {
+  editingAdminId = null;
+  adminForm.reset();
+  document.getElementById('oa-email').disabled = false;
+  document.getElementById('oa-password').required = true;
+  document.getElementById('oa-password-label').textContent = 'סיסמה';
+  document.getElementById('admin-submit-btn').textContent = 'שמירה';
+  document.getElementById('oa-subOrgs-wrap').classList.toggle('hidden', document.getElementById('oa-type').value !== 'time_admin');
+}
+
+document.getElementById('new-admin-btn').addEventListener('click', () => {
+  if (!adminForm.classList.contains('hidden') && editingAdminId === null) {
+    adminForm.classList.add('hidden');
+    return;
+  }
+  resetAdminForm();
+  adminForm.classList.remove('hidden');
+});
+document.getElementById('admin-cancel-btn').addEventListener('click', () => {
+  resetAdminForm();
+  adminForm.classList.add('hidden');
+});
 
 document.getElementById('oa-type').addEventListener('change', (e) => {
   document.getElementById('oa-subOrgs-wrap').classList.toggle('hidden', e.target.value !== 'time_admin');
 });
+
+function openEditAdmin(id) {
+  const a = currentAdmins.find(x => String(x.id) === String(id));
+  if (!a) return;
+  editingAdminId = a.id;
+  document.getElementById('oa-name').value = a.name;
+  document.getElementById('oa-email').value = a.email;
+  document.getElementById('oa-email').disabled = true;
+  document.getElementById('oa-password').value = '';
+  document.getElementById('oa-password').required = false;
+  document.getElementById('oa-password-label').textContent = 'סיסמה חדשה (השאירו ריק כדי לא לשנות)';
+  document.getElementById('oa-type').value = a.admin_type;
+  document.getElementById('oa-subOrgs-wrap').classList.toggle('hidden', a.admin_type !== 'time_admin');
+  const authorizedIds = new Set((a.subOrganizations || []).map(s => String(s.id)));
+  document.querySelectorAll('#oa-subOrgs-list input[type=checkbox]').forEach(cb => {
+    cb.checked = authorizedIds.has(cb.value);
+  });
+  document.getElementById('admin-submit-btn').textContent = 'עדכון';
+  document.getElementById('admin-form-msg').textContent = '';
+  adminForm.classList.remove('hidden');
+  adminForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 adminForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -173,22 +333,28 @@ adminForm.addEventListener('submit', async (e) => {
   msg.className = 'form-msg';
   const adminType = document.getElementById('oa-type').value;
   const subOrgIds = [...document.querySelectorAll('#oa-subOrgs-list input:checked')].map(cb => Number(cb.value));
+  const body = {
+    name: document.getElementById('oa-name').value.trim(),
+    email: document.getElementById('oa-email').value.trim(),
+    adminType,
+    subOrgIds
+  };
+  const password = document.getElementById('oa-password').value;
   try {
-    const created = await api(`/api/system/organizations/${orgId}/admins`, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: document.getElementById('oa-name').value.trim(),
-        email: document.getElementById('oa-email').value.trim(),
-        password: document.getElementById('oa-password').value,
-        adminType,
-        subOrgIds
-      })
-    });
-    adminForm.reset();
-    adminForm.classList.add('hidden');
-    document.getElementById('oa-subOrgs-wrap').classList.add('hidden');
-    loadAdmins();
-    alert('המנהל נוצר. יש להעביר לו את קישור ההרשמה ל-Google Authenticator:\n\n' + created.totpEnrollUri);
+    if (editingAdminId) {
+      if (password) body.password = password;
+      await api(`/api/system/organizations/${orgId}/admins/${editingAdminId}`, { method: 'PUT', body: JSON.stringify(body) });
+      resetAdminForm();
+      adminForm.classList.add('hidden');
+      loadAdmins();
+    } else {
+      body.password = password;
+      const created = await api(`/api/system/organizations/${orgId}/admins`, { method: 'POST', body: JSON.stringify(body) });
+      resetAdminForm();
+      adminForm.classList.add('hidden');
+      loadAdmins();
+      showLinkModal('קישור הרשמה ל-Google Authenticator עבור ' + created.email, created.totpEnrollUri);
+    }
   } catch (err) {
     const msgs = {
       'time_admin requires at least one sub-organization in subOrgIds': 'חובה לבחור לפחות תת-ארגון אחד עבור Time Admin',
@@ -198,6 +364,14 @@ adminForm.addEventListener('submit', async (e) => {
     msg.className = 'form-msg error';
   }
 });
+
+async function deleteAdmin(id) {
+  const a = currentAdmins.find(x => String(x.id) === String(id));
+  if (!a) return;
+  if (!confirm(`למחוק את ${a.name} (${ADMIN_TYPE_LABELS[a.admin_type]})?`)) return;
+  await api(`/api/system/organizations/${orgId}/admins/${id}`, { method: 'DELETE' });
+  loadAdmins();
+}
 
 /* ---------- init ---------- */
 api('/api/system/me').then(async () => {

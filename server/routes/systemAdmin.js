@@ -211,6 +211,57 @@ router.post('/organizations/:id/sub-organizations', asyncHandler(async (req, res
   }
 }));
 
+const SUB_ORG_FIELDS = [
+  ['businessRegNumber', 'business_reg_number'],
+  ['taxFileIncome', 'tax_file_income'],
+  ['taxFileBituachLeumi', 'tax_file_bituach_leumi'],
+  ['contactFirstName', 'contact_first_name'],
+  ['contactLastName', 'contact_last_name'],
+  ['contactEmail', 'contact_email'],
+  ['contactMobile', 'contact_mobile'],
+  ['paymentCardLast4', 'payment_card_last4'],
+  ['paymentCardHolderName', 'payment_card_holder_name']
+];
+
+router.put('/organizations/:orgId/sub-organizations/:id', asyncHandler(async (req, res) => {
+  const { orgId, id } = req.params;
+  const { name, subOrgType } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  if (!SUB_ORG_TYPES.includes(subOrgType)) {
+    return res.status(400).json({ error: `subOrgType must be one of ${SUB_ORG_TYPES.join(', ')}` });
+  }
+  const setClauses = ['name = $1', 'sub_org_type = $2', ...SUB_ORG_FIELDS.map(([, col], i) => `${col} = $${i + 3}`)];
+  const values = [name, subOrgType, ...SUB_ORG_FIELDS.map(([key]) => req.body[key] || null)];
+  const { rows } = await pool.query(
+    `UPDATE sub_organizations SET ${setClauses.join(', ')} WHERE id = $${values.length + 1} AND org_id = $${values.length + 2}
+     RETURNING id, sub_org_code, name, sub_org_type`,
+    [...values, Number(id), Number(orgId)]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
+}));
+
+// Employees aren't manageable yet (Phase 2), but the sub_org_id column already exists so this
+// guard is real and will start mattering the moment employee assignment ships.
+router.get('/organizations/:orgId/sub-organizations/:id/employees', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT id, name FROM employees WHERE sub_org_id = $1 ORDER BY name', [Number(req.params.id)]);
+  res.json(rows);
+}));
+
+router.delete('/organizations/:orgId/sub-organizations/:id', asyncHandler(async (req, res) => {
+  const { orgId, id } = req.params;
+  const { rows: employees } = await pool.query(
+    'SELECT id, name FROM employees WHERE sub_org_id = $1',
+    [Number(id)]
+  );
+  if (employees.length > 0) {
+    return res.status(409).json({ error: 'has_employees', count: employees.length, employees });
+  }
+  const del = await pool.query('DELETE FROM sub_organizations WHERE id = $1 AND org_id = $2', [Number(id), Number(orgId)]);
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
 /* ---------- org admins / time admins ---------- */
 
 router.get('/organizations/:id/admins', asyncHandler(async (req, res) => {
@@ -291,6 +342,80 @@ router.post('/organizations/:id/admins', asyncHandler(async (req, res) => {
   }
 }));
 
+// Edit/delete for an org_admin row is System-Admin-only; for a time_admin row the spec also
+// wants this allowed from that org's own Org Admin - but Org Admin login doesn't exist yet
+// (Phase 2), so there is only the System Admin path to gate on for now. Revisit this check once
+// Org Admin sessions exist: allow it when req.session.orgAdminId's org_id matches AND the target
+// row's admin_type is 'time_admin'.
+router.put('/organizations/:orgId/admins/:id', asyncHandler(async (req, res) => {
+  const { orgId, id } = req.params;
+  const { name, email, adminType, subOrgIds, password } = req.body || {};
+  if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
+  if (!ADMIN_TYPES.includes(adminType)) {
+    return res.status(400).json({ error: `adminType must be one of ${ADMIN_TYPES.join(', ')}` });
+  }
+  if (adminType === 'time_admin' && (!Array.isArray(subOrgIds) || subOrgIds.length === 0)) {
+    return res.status(400).json({ error: 'time_admin requires at least one sub-organization in subOrgIds' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let updated;
+    try {
+      const { rows } = password
+        ? await client.query(
+            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3, password_hash = $4
+             WHERE id = $5 AND org_id = $6 RETURNING id, email, name, admin_type`,
+            [name, email, adminType, await hashPassword(password), Number(id), Number(orgId)]
+          )
+        : await client.query(
+            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3
+             WHERE id = $4 AND org_id = $5 RETURNING id, email, name, admin_type`,
+            [name, email, adminType, Number(id), Number(orgId)]
+          );
+      updated = rows[0];
+    } catch (err) {
+      if (err.code === '23505') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'this email is already an admin for this organization' });
+      }
+      throw err;
+    }
+    if (!updated) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'not found' });
+    }
+
+    await client.query('DELETE FROM org_admin_sub_orgs WHERE org_admin_id = $1', [Number(id)]);
+    if (adminType === 'time_admin') {
+      const validSubOrgs = await client.query(
+        'SELECT id FROM sub_organizations WHERE org_id = $1 AND id = ANY($2::int[])',
+        [orgId, subOrgIds]
+      );
+      if (validSubOrgs.rows.length !== subOrgIds.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'one or more subOrgIds do not belong to this organization' });
+      }
+      for (const subOrgId of subOrgIds) {
+        await client.query('INSERT INTO org_admin_sub_orgs (org_admin_id, sub_org_id) VALUES ($1, $2)', [id, subOrgId]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json(updated);
+  } finally {
+    client.release();
+  }
+}));
+
+router.delete('/organizations/:orgId/admins/:id', asyncHandler(async (req, res) => {
+  const { orgId, id } = req.params;
+  const del = await pool.query('DELETE FROM org_admins WHERE id = $1 AND org_id = $2', [Number(id), Number(orgId)]);
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
 /* ---------- system admins ---------- */
 
 router.get('/system-admins', asyncHandler(async (req, res) => {
@@ -318,6 +443,29 @@ router.post('/system-admins', asyncHandler(async (req, res) => {
     if (err.code === '23505') return res.status(409).json({ error: 'a system admin with this email already exists' });
     throw err;
   }
+}));
+
+// Email stays fixed (it's the login identifier) - only name, phone and (optionally) password
+// are editable. Leave `password` blank/omitted to keep the current one.
+router.put('/system-admins/:id', asyncHandler(async (req, res) => {
+  const { name, phone, password } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  if (password) {
+    const passwordHash = await hashPassword(password);
+    const { rows } = await pool.query(
+      'UPDATE system_admins SET name = $1, phone = $2, password_hash = $3 WHERE id = $4 RETURNING id, email, name, phone, is_root',
+      [name, phone || null, passwordHash, Number(req.params.id)]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'not found' });
+    return res.json(rows[0]);
+  }
+  const { rows } = await pool.query(
+    'UPDATE system_admins SET name = $1, phone = $2 WHERE id = $3 RETURNING id, email, name, phone, is_root',
+    [name, phone || null, Number(req.params.id)]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
 }));
 
 router.delete('/system-admins/:id', asyncHandler(async (req, res) => {

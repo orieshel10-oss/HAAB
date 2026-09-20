@@ -8,6 +8,7 @@
 <link rel="icon" href="../icons/icon-192.png" />
 <link rel="stylesheet" href="../styles.css" />
 <link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
 </head>
 <body>
 <div class="login-page">
@@ -22,7 +23,10 @@
       </div>
       <div>
         <label for="password">סיסמה</label>
-        <input type="password" id="password" required autocomplete="current-password" />
+        <div class="pw-wrap">
+          <input type="password" id="password" required autocomplete="current-password" />
+          <button type="button" id="password-toggle" class="pw-toggle">👁</button>
+        </div>
       </div>
       <div>
         <label for="totp">קוד מ-Google Authenticator</label>
@@ -38,6 +42,7 @@
 const form = document.getElementById('login-form');
 const errorMsg = document.getElementById('error-msg');
 const submitBtn = document.getElementById('submit-btn');
+wirePasswordToggle('password', 'password-toggle');
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();

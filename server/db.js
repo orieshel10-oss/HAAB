@@ -97,6 +97,9 @@ async function init() {
       name TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    -- Forward reference for the sub-organization delete guard (Phase 1) even though the full
+    -- employee management screens land in Phase 2 - keeps that guard real/testable once they do.
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS sub_org_id INTEGER REFERENCES sub_organizations(id);
 
     CREATE TABLE IF NOT EXISTS attendance_events (
       id SERIAL PRIMARY KEY,
