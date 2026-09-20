@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - אזור מנהל מערכת</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1>אזור מנהל מערכת</h1>
+    <button id="logout-btn">יציאה</button>
+  </header>
+
+  <div class="admin-content">
+
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>ארגונים</h2>
+        <button class="btn btn-primary btn-small" id="new-org-btn">+ ארגון חדש</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>קוד</th><th>שם</th><th>ח.פ.</th><th>איש קשר</th><th></th></tr></thead>
+        <tbody id="orgs-tbody"><tr class="empty-row"><td colspan="5">טוען...</td></tr></tbody>
+      </table>
+      <form class="admin-form hidden" id="org-form">
+        <div class="form-row">
+          <div><label>קוד ארגון (6 ספרות)</label><input id="org-code" maxlength="6" required /></div>
+          <div><label>שם ארגון</label><input id="org-name" required /></div>
+        </div>
+        <div class="form-row">
+          <div><label>ח.פ.</label><input id="org-reg" /></div>
+          <div><label>תיק ניכויים מ"ה</label><input id="org-tax-income" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>תיק ניכויים ב"ל</label><input id="org-tax-bl" /></div>
+          <div><label>סיסמת כניסה לארגון</label><input id="org-entry-password" type="password" required /></div>
+        </div>
+        <div class="form-row">
+          <div><label>שם פרטי איש קשר</label><input id="org-contact-first" /></div>
+          <div><label>שם משפחה איש קשר</label><input id="org-contact-last" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>מייל איש קשר</label><input id="org-contact-email" type="email" /></div>
+          <div><label>נייד איש קשר</label><input id="org-contact-mobile" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>4 ספרות אחרונות כרטיס אשראי</label><input id="org-card-last4" maxlength="4" /></div>
+          <div><label>שם בעל הכרטיס</label><input id="org-card-holder" /></div>
+        </div>
+        <div class="form-msg" id="org-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="org-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>מנהלי מערכת (System Admin)</h2>
+        <button class="btn btn-primary btn-small" id="new-sysadmin-btn">+ מנהל מערכת</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>שם</th><th>מייל</th><th>טלפון</th><th></th></tr></thead>
+        <tbody id="sysadmins-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+      </table>
+      <form class="admin-form hidden" id="sysadmin-form">
+        <div class="form-row">
+          <div><label>שם מלא</label><input id="sa-name" required /></div>
+          <div><label>מייל</label><input id="sa-email" type="email" required /></div>
+        </div>
+        <div class="form-row">
+          <div><label>טלפון</label><input id="sa-phone" /></div>
+          <div><label>סיסמה</label><input id="sa-password" type="password" required /></div>
+        </div>
+        <div class="form-msg" id="sysadmin-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="sysadmin-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+
+  </div>
+</div>
+
+<div class="modal-overlay-simple hidden" id="enter-org-overlay">
+  <div class="modal-card-simple">
+    <h3>כניסה לארגון</h3>
+    <input type="password" id="enter-org-password" placeholder="סיסמת כניסה לארגון" />
+    <div class="form-msg error" id="enter-org-msg"></div>
+    <div class="form-actions">
+      <button class="btn btn-primary" id="enter-org-confirm">כניסה</button>
+      <button class="btn btn-secondary" id="enter-org-cancel">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'error');
+  return data;
+}
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  await api('/api/system/logout', { method: 'POST' });
+  window.location.href = 'login.html';
+});
+
+/* ---------- organizations ---------- */
+async function loadOrgs() {
+  const orgs = await api('/api/system/organizations');
+  const tbody = document.getElementById('orgs-tbody');
+  tbody.innerHTML = orgs.length ? orgs.map(o => `
+    <tr>
+      <td>${o.org_code}</td>
+      <td>${o.name}</td>
+      <td>${o.business_reg_number || ''}</td>
+      <td>${[o.contact_first_name, o.contact_last_name].filter(Boolean).join(' ')}</td>
+      <td><button class="btn btn-secondary btn-small enter-org-btn" data-id="${o.id}">כניסה לארגון ←</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="5">אין עדיין ארגונים</td></tr>';
+
+  tbody.querySelectorAll('.enter-org-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEnterOrg(btn.dataset.id));
+  });
+}
+
+const orgForm = document.getElementById('org-form');
+document.getElementById('new-org-btn').addEventListener('click', () => orgForm.classList.toggle('hidden'));
+document.getElementById('org-cancel-btn').addEventListener('click', () => orgForm.classList.add('hidden'));
+
+orgForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('org-form-msg');
+  msg.textContent = '';
+  msg.className = 'form-msg';
+  try {
+    await api('/api/system/organizations', {
+      method: 'POST',
+      body: JSON.stringify({
+        orgCode: document.getElementById('org-code').value.trim(),
+        name: document.getElementById('org-name').value.trim(),
+        businessRegNumber: document.getElementById('org-reg').value.trim(),
+        taxFileIncome: document.getElementById('org-tax-income').value.trim(),
+        taxFileBituachLeumi: document.getElementById('org-tax-bl').value.trim(),
+        contactFirstName: document.getElementById('org-contact-first').value.trim(),
+        contactLastName: document.getElementById('org-contact-last').value.trim(),
+        contactEmail: document.getElementById('org-contact-email').value.trim(),
+        contactMobile: document.getElementById('org-contact-mobile').value.trim(),
+        paymentCardLast4: document.getElementById('org-card-last4').value.trim(),
+        paymentCardHolderName: document.getElementById('org-card-holder').value.trim(),
+        entryPassword: document.getElementById('org-entry-password').value
+      })
+    });
+    orgForm.reset();
+    orgForm.classList.add('hidden');
+    loadOrgs();
+  } catch (err) {
+    msg.textContent = err.message === 'org_code already exists' ? 'קוד הארגון כבר קיים' : err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+let enterOrgId = null;
+function openEnterOrg(id) {
+  enterOrgId = id;
+  document.getElementById('enter-org-password').value = '';
+  document.getElementById('enter-org-msg').textContent = '';
+  document.getElementById('enter-org-overlay').classList.remove('hidden');
+}
+document.getElementById('enter-org-cancel').addEventListener('click', () => {
+  document.getElementById('enter-org-overlay').classList.add('hidden');
+});
+document.getElementById('enter-org-confirm').addEventListener('click', async () => {
+  const msg = document.getElementById('enter-org-msg');
+  try {
+    await api(`/api/system/organizations/${enterOrgId}/enter`, {
+      method: 'POST',
+      body: JSON.stringify({ password: document.getElementById('enter-org-password').value })
+    });
+    window.location.href = `organization.html?id=${enterOrgId}`;
+  } catch (err) {
+    msg.textContent = 'סיסמה שגויה';
+  }
+});
+
+/* ---------- system admins ---------- */
+async function loadSysAdmins() {
+  const admins = await api('/api/system/system-admins');
+  const tbody = document.getElementById('sysadmins-tbody');
+  tbody.innerHTML = admins.map(a => `
+    <tr>
+      <td>${a.name} ${a.is_root ? '<span class="badge badge-root">שורש</span>' : ''}</td>
+      <td>${a.email}</td>
+      <td>${a.phone || ''}</td>
+      <td>${a.is_root ? '' : `<button class="btn btn-danger btn-small del-sysadmin-btn" data-id="${a.id}">מחיקה</button>`}</td>
+    </tr>`).join('');
+
+  tbody.querySelectorAll('.del-sysadmin-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('למחוק את מנהל המערכת הזה?')) return;
+      await api(`/api/system/system-admins/${btn.dataset.id}`, { method: 'DELETE' });
+      loadSysAdmins();
+    });
+  });
+}
+
+const sysadminForm = document.getElementById('sysadmin-form');
+document.getElementById('new-sysadmin-btn').addEventListener('click', () => sysadminForm.classList.toggle('hidden'));
+document.getElementById('sysadmin-cancel-btn').addEventListener('click', () => sysadminForm.classList.add('hidden'));
+
+sysadminForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('sysadmin-form-msg');
+  msg.textContent = '';
+  msg.className = 'form-msg';
+  try {
+    const created = await api('/api/system/system-admins', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: document.getElementById('sa-name').value.trim(),
+        email: document.getElementById('sa-email').value.trim(),
+        phone: document.getElementById('sa-phone').value.trim(),
+        password: document.getElementById('sa-password').value
+      })
+    });
+    sysadminForm.reset();
+    sysadminForm.classList.add('hidden');
+    loadSysAdmins();
+    alert('מנהל המערכת נוצר. יש להעביר לו את קישור ההרשמה ל-Google Authenticator:\n\n' + created.totpEnrollUri);
+  } catch (err) {
+    msg.textContent = err.message === 'a system admin with this email already exists' ? 'כבר קיים מנהל מערכת עם המייל הזה' : err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+/* ---------- init ---------- */
+api('/api/system/me').then(() => { loadOrgs(); loadSysAdmins(); });
+</script>
+</body>
+</html>

@@ -8,8 +8,13 @@
     "start": "node server/index.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "connect-pg-simple": "^10.0.0",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
-    "pg": "^8.23.0"
+    "express-session": "^1.19.0",
+    "otpauth": "^9.5.2",
+    "pg": "^8.23.0",
+    "qrcode": "^1.5.4"
   }
 }

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - ניהול ארגון</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1 id="org-title">ניהול ארגון</h1>
+    <a href="dashboard.html">חזרה לרשימת ארגונים</a>
+  </header>
+
+  <div class="admin-content">
+
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>תתי-ארגונים</h2>
+        <button class="btn btn-primary btn-small" id="new-subOrg-btn">+ תת-ארגון</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>קוד</th><th>שם</th><th>סוג</th></tr></thead>
+        <tbody id="subOrgs-tbody"><tr class="empty-row"><td colspan="3">טוען...</td></tr></tbody>
+      </table>
+      <form class="admin-form hidden" id="subOrg-form">
+        <div class="form-row">
+          <div><label>קוד תת-ארגון</label><input id="so-code" required /></div>
+          <div><label>שם</label><input id="so-name" required /></div>
+        </div>
+        <div>
+          <label>סוג</label>
+          <select id="so-type" required>
+            <option value="factory_unit">תת מפעל</option>
+            <option value="division">חטיבה</option>
+            <option value="department">מחלקה</option>
+          </select>
+        </div>
+        <div class="form-msg" id="subOrg-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="subOrg-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>מנהלי ארגון ומנהלני נוכחות</h2>
+        <button class="btn btn-primary btn-small" id="new-admin-btn">+ מנהל</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>שם</th><th>מייל</th><th>סוג</th><th>תתי-ארגון מורשים</th></tr></thead>
+        <tbody id="admins-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+      </table>
+      <form class="admin-form hidden" id="admin-form">
+        <div class="form-row">
+          <div><label>שם מלא</label><input id="oa-name" required /></div>
+          <div><label>מייל</label><input id="oa-email" type="email" required /></div>
+        </div>
+        <div class="form-row">
+          <div><label>סיסמה</label><input id="oa-password" type="password" required /></div>
+          <div>
+            <label>סוג הרשאה</label>
+            <select id="oa-type">
+              <option value="org_admin">Org Admin - מנהל ארגון</option>
+              <option value="time_admin">Time Admin - מנהלן נוכחות</option>
+            </select>
+          </div>
+        </div>
+        <div id="oa-subOrgs-wrap" class="hidden">
+          <label>תתי-ארגונים מורשים (חובה ל-Time Admin)</label>
+          <div class="checkbox-list" id="oa-subOrgs-list"></div>
+        </div>
+        <div class="form-msg" id="admin-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="admin-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+
+  </div>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const orgId = params.get('id');
+if (!orgId) window.location.href = 'dashboard.html';
+
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'error');
+  return data;
+}
+
+const SUB_ORG_TYPE_LABELS = { factory_unit: 'תת מפעל', division: 'חטיבה', department: 'מחלקה' };
+const ADMIN_TYPE_LABELS = { org_admin: 'Org Admin', time_admin: 'Time Admin' };
+
+let currentSubOrgs = [];
+
+async function loadSubOrgs() {
+  currentSubOrgs = await api(`/api/system/organizations/${orgId}/sub-organizations`);
+  const tbody = document.getElementById('subOrgs-tbody');
+  tbody.innerHTML = currentSubOrgs.length ? currentSubOrgs.map(s => `
+    <tr><td>${s.sub_org_code}</td><td>${s.name}</td><td>${SUB_ORG_TYPE_LABELS[s.sub_org_type] || s.sub_org_type}</td></tr>
+  `).join('') : '<tr class="empty-row"><td colspan="3">אין תתי-ארגונים</td></tr>';
+
+  const list = document.getElementById('oa-subOrgs-list');
+  list.innerHTML = currentSubOrgs.map(s => `
+    <label><input type="checkbox" value="${s.id}" /> ${s.name} (${s.sub_org_code})</label>
+  `).join('') || '<span style="font-size:12px;color:var(--text-muted)">אין תתי-ארגונים בארגון זה</span>';
+}
+
+const subOrgForm = document.getElementById('subOrg-form');
+document.getElementById('new-subOrg-btn').addEventListener('click', () => subOrgForm.classList.toggle('hidden'));
+document.getElementById('subOrg-cancel-btn').addEventListener('click', () => subOrgForm.classList.add('hidden'));
+
+subOrgForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('subOrg-form-msg');
+  msg.textContent = '';
+  msg.className = 'form-msg';
+  try {
+    await api(`/api/system/organizations/${orgId}/sub-organizations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        subOrgCode: document.getElementById('so-code').value.trim(),
+        name: document.getElementById('so-name').value.trim(),
+        subOrgType: document.getElementById('so-type').value
+      })
+    });
+    subOrgForm.reset();
+    subOrgForm.classList.add('hidden');
+    loadSubOrgs();
+  } catch (err) {
+    msg.textContent = err.message === 'sub_org_code already exists' ? 'קוד תת-הארגון כבר קיים' : err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+async function loadAdmins() {
+  const admins = await api(`/api/system/organizations/${orgId}/admins`);
+  const tbody = document.getElementById('admins-tbody');
+  tbody.innerHTML = admins.length ? admins.map(a => `
+    <tr>
+      <td>${a.name}</td>
+      <td>${a.email}</td>
+      <td><span class="badge ${a.admin_type === 'time_admin' ? 'badge-time-admin' : 'badge-org-admin'}">${ADMIN_TYPE_LABELS[a.admin_type]}</span></td>
+      <td>${(a.subOrganizations || []).map(s => s.name).join(', ') || '-'}</td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין עדיין מנהלים</td></tr>';
+}
+
+const adminForm = document.getElementById('admin-form');
+document.getElementById('new-admin-btn').addEventListener('click', () => adminForm.classList.toggle('hidden'));
+document.getElementById('admin-cancel-btn').addEventListener('click', () => adminForm.classList.add('hidden'));
+
+document.getElementById('oa-type').addEventListener('change', (e) => {
+  document.getElementById('oa-subOrgs-wrap').classList.toggle('hidden', e.target.value !== 'time_admin');
+});
+
+adminForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('admin-form-msg');
+  msg.textContent = '';
+  msg.className = 'form-msg';
+  const adminType = document.getElementById('oa-type').value;
+  const subOrgIds = [...document.querySelectorAll('#oa-subOrgs-list input:checked')].map(cb => Number(cb.value));
+  try {
+    const created = await api(`/api/system/organizations/${orgId}/admins`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: document.getElementById('oa-name').value.trim(),
+        email: document.getElementById('oa-email').value.trim(),
+        password: document.getElementById('oa-password').value,
+        adminType,
+        subOrgIds
+      })
+    });
+    adminForm.reset();
+    adminForm.classList.add('hidden');
+    document.getElementById('oa-subOrgs-wrap').classList.add('hidden');
+    loadAdmins();
+    alert('המנהל נוצר. יש להעביר לו את קישור ההרשמה ל-Google Authenticator:\n\n' + created.totpEnrollUri);
+  } catch (err) {
+    const msgs = {
+      'time_admin requires at least one sub-organization in subOrgIds': 'חובה לבחור לפחות תת-ארגון אחד עבור Time Admin',
+      'this email is already an admin for this organization': 'כבר קיים מנהל עם המייל הזה בארגון'
+    };
+    msg.textContent = msgs[err.message] || err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+/* ---------- init ---------- */
+api('/api/system/me').then(async () => {
+  const orgs = await api('/api/system/organizations');
+  const org = orgs.find(o => String(o.id) === String(orgId));
+  if (org) document.getElementById('org-title').textContent = `${org.name} (${org.org_code})`;
+  await loadSubOrgs();
+  await loadAdmins();
+});
+</script>
+</body>
+</html>

@@ -11,15 +11,87 @@ const pool = new Pool({
 
 async function init() {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS clients (
+    -- "clients" is the pre-multi-tenant name for what is now "organizations". Rename in place
+    -- (idempotent: a no-op once organizations exists) so existing data/FKs carry over untouched.
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'clients')
+         AND NOT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'organizations') THEN
+        ALTER TABLE clients RENAME TO organizations;
+      END IF;
+    END $$;
+
+    CREATE TABLE IF NOT EXISTS organizations (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS org_code TEXT UNIQUE;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS business_reg_number TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_file_income TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tax_file_bituach_leumi TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_first_name TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_last_name TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_email TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_mobile TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS payment_card_last4 TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS payment_card_holder_name TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS org_entry_password_hash TEXT;
+
+    CREATE TABLE IF NOT EXISTS sub_organizations (
+      id SERIAL PRIMARY KEY,
+      sub_org_code TEXT NOT NULL UNIQUE,
+      org_id INTEGER NOT NULL REFERENCES organizations(id),
+      name TEXT NOT NULL,
+      business_reg_number TEXT,
+      tax_file_income TEXT,
+      tax_file_bituach_leumi TEXT,
+      contact_first_name TEXT,
+      contact_last_name TEXT,
+      contact_email TEXT,
+      contact_mobile TEXT,
+      payment_card_last4 TEXT,
+      payment_card_holder_name TEXT,
+      sub_org_type TEXT NOT NULL CHECK (sub_org_type IN ('factory_unit', 'division', 'department')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- Seeded once via scripts/seed-root-admin.js (direct DB access), never through the app's own
+    -- UI. is_root protects that one row: application code must refuse to delete it.
+    CREATE TABLE IF NOT EXISTS system_admins (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      phone TEXT,
+      password_hash TEXT NOT NULL,
+      totp_secret TEXT,
+      is_root BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS org_admins (
+      id SERIAL PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES organizations(id),
+      email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      totp_secret TEXT,
+      admin_type TEXT NOT NULL CHECK (admin_type IN ('org_admin', 'time_admin')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(org_id, email)
+    );
+
+    -- Required (enforced at the API layer) for every admin_type='time_admin' row: which
+    -- sub-organizations they're authorized to see/approve attendance for.
+    CREATE TABLE IF NOT EXISTS org_admin_sub_orgs (
+      org_admin_id INTEGER NOT NULL REFERENCES org_admins(id) ON DELETE CASCADE,
+      sub_org_id INTEGER NOT NULL REFERENCES sub_organizations(id) ON DELETE CASCADE,
+      PRIMARY KEY (org_admin_id, sub_org_id)
+    );
 
     CREATE TABLE IF NOT EXISTS employees (
       id SERIAL PRIMARY KEY,
-      client_id INTEGER NOT NULL REFERENCES clients(id),
+      client_id INTEGER NOT NULL REFERENCES organizations(id),
       name TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
@@ -50,10 +122,10 @@ async function init() {
     );
   `);
 
-  const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM clients');
+  const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM organizations');
   if (rows[0].c === 0) {
-    const client = await pool.query("INSERT INTO clients (name) VALUES ('לקוח ראשון') RETURNING id");
-    await pool.query('INSERT INTO employees (client_id, name) VALUES ($1, $2)', [client.rows[0].id, 'עובד ראשי']);
+    const org = await pool.query("INSERT INTO organizations (name) VALUES ('לקוח ראשון') RETURNING id");
+    await pool.query('INSERT INTO employees (client_id, name) VALUES ($1, $2)', [org.rows[0].id, 'עובד ראשי']);
   }
 }
 

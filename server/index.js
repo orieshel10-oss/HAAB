@@ -2,7 +2,10 @@ require('dotenv').config();
 
 const express = require('express');
 const path = require('node:path');
+const session = require('express-session');
+const pgSessionStore = require('connect-pg-simple')(session);
 const { pool, init } = require('./db');
+const systemAdminRouter = require('./routes/systemAdmin');
 const {
   ABSENCE_TYPES,
   pad,
@@ -19,6 +22,19 @@ const {
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+app.use(session({
+  store: new pgSessionStore({ pool, tableName: 'session', createTableIfMissing: true }),
+  secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
+  resave: false,
+  saveUninitialized: false,
+  // Render's proxy terminates TLS in front of the app, so `secure: true` here would silently
+  // stop the cookie from being set. Keep it false for now; harden this once the deployment's
+  // proxy trust is set up deliberately.
+  cookie: { maxAge: 8 * 60 * 60 * 1000, sameSite: 'lax', secure: false }
+}));
+
+app.use('/api/system', systemAdminRouter);
 
 // Phase 1: single client / single employee, no auth yet.
 const CLIENT_ID = Number(process.env.CLIENT_ID || 1);
