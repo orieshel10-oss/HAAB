@@ -61,32 +61,35 @@ router.get('/organizations', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+const ORG_FIELDS = [
+  ['businessRegNumber', 'business_reg_number'],
+  ['taxFileIncome', 'tax_file_income'],
+  ['taxFileBituachLeumi', 'tax_file_bituach_leumi'],
+  ['contactFirstName', 'contact_first_name'],
+  ['contactLastName', 'contact_last_name'],
+  ['contactEmail', 'contact_email'],
+  ['contactMobile', 'contact_mobile'],
+  ['paymentCardLast4', 'payment_card_last4'],
+  ['paymentCardHolderName', 'payment_card_holder_name']
+];
+
 router.post('/organizations', asyncHandler(async (req, res) => {
-  const {
-    orgCode, name, businessRegNumber, taxFileIncome, taxFileBituachLeumi,
-    contactFirstName, contactLastName, contactEmail, contactMobile,
-    paymentCardLast4, paymentCardHolderName, entryPassword
-  } = req.body || {};
+  const { orgCode, name } = req.body || {};
 
   if (!/^\d{6}$/.test(orgCode || '')) {
     return res.status(400).json({ error: 'orgCode must be exactly 6 digits' });
   }
-  if (!name || !entryPassword) {
-    return res.status(400).json({ error: 'name and entryPassword are required' });
-  }
+  if (!name) return res.status(400).json({ error: 'name is required' });
 
-  const entryPasswordHash = await hashPassword(entryPassword);
   try {
     const { rows } = await pool.query(
       `INSERT INTO organizations
          (name, org_code, business_reg_number, tax_file_income, tax_file_bituach_leumi,
           contact_first_name, contact_last_name, contact_email, contact_mobile,
-          payment_card_last4, payment_card_holder_name, org_entry_password_hash)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          payment_card_last4, payment_card_holder_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING id, org_code, name`,
-      [name, orgCode, businessRegNumber || null, taxFileIncome || null, taxFileBituachLeumi || null,
-        contactFirstName || null, contactLastName || null, contactEmail || null, contactMobile || null,
-        paymentCardLast4 || null, paymentCardHolderName || null, entryPasswordHash]
+      [name, orgCode, ...ORG_FIELDS.map(([key]) => req.body[key] || null)]
     );
     res.json(rows[0]);
   } catch (err) {
@@ -95,12 +98,71 @@ router.post('/organizations', asyncHandler(async (req, res) => {
   }
 }));
 
+router.put('/organizations/:id', asyncHandler(async (req, res) => {
+  const orgId = Number(req.params.id);
+  const { name } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  const setClauses = ['name = $1', ...ORG_FIELDS.map(([, col], i) => `${col} = $${i + 2}`)];
+  const values = [name, ...ORG_FIELDS.map(([key]) => req.body[key] || null)];
+  const { rows } = await pool.query(
+    `UPDATE organizations SET ${setClauses.join(', ')} WHERE id = $${values.length + 1}
+     RETURNING id, org_code, name`,
+    [...values, orgId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
+}));
+
+// Deleting an organization is destructive (cascades to its employees' attendance/absence
+// history, sub-orgs and admins), so it's gated behind the *logged-in System Admin's own*
+// login password rather than anything org-specific - a standard "re-enter your password to
+// confirm" step-up, not a separate secret to manage per org.
+router.delete('/organizations/:id', asyncHandler(async (req, res) => {
+  const orgId = Number(req.params.id);
+  const { password } = req.body || {};
+  const { rows } = await pool.query('SELECT password_hash FROM system_admins WHERE id = $1', [req.session.systemAdminId]);
+  if (!rows[0] || !(await verifyPassword(password || '', rows[0].password_hash))) {
+    return res.status(401).json({ error: 'invalid password' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `DELETE FROM attendance_events WHERE employee_id IN (SELECT id FROM employees WHERE client_id = $1)`,
+      [orgId]
+    );
+    await client.query(
+      `DELETE FROM absences WHERE employee_id IN (SELECT id FROM employees WHERE client_id = $1)`,
+      [orgId]
+    );
+    await client.query('DELETE FROM employees WHERE client_id = $1', [orgId]);
+    await client.query('DELETE FROM org_admins WHERE org_id = $1', [orgId]);
+    await client.query('DELETE FROM sub_organizations WHERE org_id = $1', [orgId]);
+    const del = await client.query('DELETE FROM organizations WHERE id = $1', [orgId]);
+    await client.query('COMMIT');
+    if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// Re-verifies the logged-in System Admin's own password before letting them cross from the
+// product-level area into a specific organization's context (step-up auth, not a per-org secret).
 router.post('/organizations/:id/enter', asyncHandler(async (req, res) => {
   const orgId = Number(req.params.id);
   const { password } = req.body || {};
-  const { rows } = await pool.query('SELECT org_entry_password_hash FROM organizations WHERE id = $1', [orgId]);
-  if (!rows[0] || !(await verifyPassword(password || '', rows[0].org_entry_password_hash || ''))) {
-    return res.status(401).json({ error: 'invalid organization password' });
+  const { rows: orgRows } = await pool.query('SELECT id FROM organizations WHERE id = $1', [orgId]);
+  if (!orgRows[0]) return res.status(404).json({ error: 'not found' });
+
+  const { rows } = await pool.query('SELECT password_hash FROM system_admins WHERE id = $1', [req.session.systemAdminId]);
+  if (!rows[0] || !(await verifyPassword(password || '', rows[0].password_hash))) {
+    return res.status(401).json({ error: 'invalid password' });
   }
   req.session.enteredOrgId = orgId;
   res.json({ ok: true });

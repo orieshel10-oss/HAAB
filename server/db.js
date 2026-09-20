@@ -36,7 +36,9 @@ async function init() {
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_mobile TEXT;
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS payment_card_last4 TEXT;
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS payment_card_holder_name TEXT;
-    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS org_entry_password_hash TEXT;
+    -- Superseded: entering an org now re-checks the System Admin's own login password
+    -- (step-up auth) instead of a separate per-org secret.
+    ALTER TABLE organizations DROP COLUMN IF EXISTS org_entry_password_hash;
 
     CREATE TABLE IF NOT EXISTS sub_organizations (
       id SERIAL PRIMARY KEY,

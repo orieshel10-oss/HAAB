@@ -25,8 +25,8 @@
         <button class="btn btn-primary btn-small" id="new-org-btn">+ ארגון חדש</button>
       </div>
       <table class="admin-table">
-        <thead><tr><th>קוד</th><th>שם</th><th>ח.פ.</th><th>איש קשר</th><th></th></tr></thead>
-        <tbody id="orgs-tbody"><tr class="empty-row"><td colspan="5">טוען...</td></tr></tbody>
+        <thead><tr><th>קוד</th><th>שם</th><th>ח.פ.</th><th>איש קשר</th><th colspan="3"></th></tr></thead>
+        <tbody id="orgs-tbody"><tr class="empty-row"><td colspan="7">טוען...</td></tr></tbody>
       </table>
       <form class="admin-form hidden" id="org-form">
         <div class="form-row">
@@ -39,7 +39,7 @@
         </div>
         <div class="form-row">
           <div><label>תיק ניכויים ב"ל</label><input id="org-tax-bl" /></div>
-          <div><label>סיסמת כניסה לארגון</label><input id="org-entry-password" type="password" required /></div>
+          <div></div>
         </div>
         <div class="form-row">
           <div><label>שם פרטי איש קשר</label><input id="org-contact-first" /></div>
@@ -55,7 +55,7 @@
         </div>
         <div class="form-msg" id="org-form-msg"></div>
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="submit" class="btn btn-primary" id="org-submit-btn">שמירה</button>
           <button type="button" class="btn btn-secondary" id="org-cancel-btn">ביטול</button>
         </div>
       </form>
@@ -93,11 +93,25 @@
 <div class="modal-overlay-simple hidden" id="enter-org-overlay">
   <div class="modal-card-simple">
     <h3>כניסה לארגון</h3>
-    <input type="password" id="enter-org-password" placeholder="סיסמת כניסה לארגון" />
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 10px;">לאימות, הזינו את סיסמת הכניסה שלכם (אותה סיסמה שאיתה נכנסתם למערכת).</p>
+    <input type="password" id="enter-org-password" placeholder="הסיסמה שלכם" />
     <div class="form-msg error" id="enter-org-msg"></div>
     <div class="form-actions">
       <button class="btn btn-primary" id="enter-org-confirm">כניסה</button>
       <button class="btn btn-secondary" id="enter-org-cancel">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay-simple hidden" id="delete-org-overlay">
+  <div class="modal-card-simple">
+    <h3>מחיקת ארגון</h3>
+    <p style="font-size:13px;color:var(--red-dark);margin:0 0 10px;">פעולה זו תמחק לצמיתות את הארגון, כל העובדים בו וכל נתוני הנוכחות וההיעדרויות שלהם. לאימות, הזינו את סיסמת הכניסה שלכם.</p>
+    <input type="password" id="delete-org-password" placeholder="הסיסמה שלכם" />
+    <div class="form-msg error" id="delete-org-msg"></div>
+    <div class="form-actions">
+      <button class="btn btn-danger" id="delete-org-confirm">מחיקה סופית</button>
+      <button class="btn btn-secondary" id="delete-org-cancel">ביטול</button>
     </div>
   </div>
 </div>
@@ -117,51 +131,103 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 });
 
 /* ---------- organizations ---------- */
+let orgsCache = [];
+let editingOrgId = null;
+
 async function loadOrgs() {
-  const orgs = await api('/api/system/organizations');
+  orgsCache = await api('/api/system/organizations');
   const tbody = document.getElementById('orgs-tbody');
-  tbody.innerHTML = orgs.length ? orgs.map(o => `
+  tbody.innerHTML = orgsCache.length ? orgsCache.map(o => `
     <tr>
       <td>${o.org_code}</td>
       <td>${o.name}</td>
       <td>${o.business_reg_number || ''}</td>
       <td>${[o.contact_first_name, o.contact_last_name].filter(Boolean).join(' ')}</td>
       <td><button class="btn btn-secondary btn-small enter-org-btn" data-id="${o.id}">כניסה לארגון ←</button></td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="5">אין עדיין ארגונים</td></tr>';
+      <td><button class="btn btn-secondary btn-small edit-org-btn" data-id="${o.id}">עריכה</button></td>
+      <td><button class="btn btn-danger btn-small delete-org-btn" data-id="${o.id}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="7">אין עדיין ארגונים</td></tr>';
 
   tbody.querySelectorAll('.enter-org-btn').forEach(btn => {
     btn.addEventListener('click', () => openEnterOrg(btn.dataset.id));
   });
+  tbody.querySelectorAll('.edit-org-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEditOrg(btn.dataset.id));
+  });
+  tbody.querySelectorAll('.delete-org-btn').forEach(btn => {
+    btn.addEventListener('click', () => openDeleteOrg(btn.dataset.id));
+  });
 }
 
 const orgForm = document.getElementById('org-form');
-document.getElementById('new-org-btn').addEventListener('click', () => orgForm.classList.toggle('hidden'));
-document.getElementById('org-cancel-btn').addEventListener('click', () => orgForm.classList.add('hidden'));
+
+function resetOrgForm() {
+  editingOrgId = null;
+  orgForm.reset();
+  document.getElementById('org-code').disabled = false;
+  document.getElementById('org-submit-btn').textContent = 'שמירה';
+}
+
+document.getElementById('new-org-btn').addEventListener('click', () => {
+  if (!orgForm.classList.contains('hidden') && editingOrgId === null) {
+    orgForm.classList.add('hidden');
+    return;
+  }
+  resetOrgForm();
+  orgForm.classList.remove('hidden');
+});
+document.getElementById('org-cancel-btn').addEventListener('click', () => {
+  resetOrgForm();
+  orgForm.classList.add('hidden');
+});
+
+function openEditOrg(id) {
+  const o = orgsCache.find(x => String(x.id) === String(id));
+  if (!o) return;
+  editingOrgId = o.id;
+  document.getElementById('org-code').value = o.org_code;
+  document.getElementById('org-code').disabled = true;
+  document.getElementById('org-name').value = o.name || '';
+  document.getElementById('org-reg').value = o.business_reg_number || '';
+  document.getElementById('org-tax-income').value = o.tax_file_income || '';
+  document.getElementById('org-tax-bl').value = o.tax_file_bituach_leumi || '';
+  document.getElementById('org-contact-first').value = o.contact_first_name || '';
+  document.getElementById('org-contact-last').value = o.contact_last_name || '';
+  document.getElementById('org-contact-email').value = o.contact_email || '';
+  document.getElementById('org-contact-mobile').value = o.contact_mobile || '';
+  document.getElementById('org-card-last4').value = o.payment_card_last4 || '';
+  document.getElementById('org-card-holder').value = o.payment_card_holder_name || '';
+  document.getElementById('org-submit-btn').textContent = 'עדכון';
+  document.getElementById('org-form-msg').textContent = '';
+  orgForm.classList.remove('hidden');
+  orgForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 orgForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const msg = document.getElementById('org-form-msg');
   msg.textContent = '';
   msg.className = 'form-msg';
+  const body = {
+    name: document.getElementById('org-name').value.trim(),
+    businessRegNumber: document.getElementById('org-reg').value.trim(),
+    taxFileIncome: document.getElementById('org-tax-income').value.trim(),
+    taxFileBituachLeumi: document.getElementById('org-tax-bl').value.trim(),
+    contactFirstName: document.getElementById('org-contact-first').value.trim(),
+    contactLastName: document.getElementById('org-contact-last').value.trim(),
+    contactEmail: document.getElementById('org-contact-email').value.trim(),
+    contactMobile: document.getElementById('org-contact-mobile').value.trim(),
+    paymentCardLast4: document.getElementById('org-card-last4').value.trim(),
+    paymentCardHolderName: document.getElementById('org-card-holder').value.trim()
+  };
   try {
-    await api('/api/system/organizations', {
-      method: 'POST',
-      body: JSON.stringify({
-        orgCode: document.getElementById('org-code').value.trim(),
-        name: document.getElementById('org-name').value.trim(),
-        businessRegNumber: document.getElementById('org-reg').value.trim(),
-        taxFileIncome: document.getElementById('org-tax-income').value.trim(),
-        taxFileBituachLeumi: document.getElementById('org-tax-bl').value.trim(),
-        contactFirstName: document.getElementById('org-contact-first').value.trim(),
-        contactLastName: document.getElementById('org-contact-last').value.trim(),
-        contactEmail: document.getElementById('org-contact-email').value.trim(),
-        contactMobile: document.getElementById('org-contact-mobile').value.trim(),
-        paymentCardLast4: document.getElementById('org-card-last4').value.trim(),
-        paymentCardHolderName: document.getElementById('org-card-holder').value.trim(),
-        entryPassword: document.getElementById('org-entry-password').value
-      })
-    });
-    orgForm.reset();
+    if (editingOrgId) {
+      await api(`/api/system/organizations/${editingOrgId}`, { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      body.orgCode = document.getElementById('org-code').value.trim();
+      await api('/api/system/organizations', { method: 'POST', body: JSON.stringify(body) });
+    }
+    resetOrgForm();
     orgForm.classList.add('hidden');
     loadOrgs();
   } catch (err) {
@@ -188,6 +254,33 @@ document.getElementById('enter-org-confirm').addEventListener('click', async () 
       body: JSON.stringify({ password: document.getElementById('enter-org-password').value })
     });
     window.location.href = `organization.html?id=${enterOrgId}`;
+  } catch (err) {
+    msg.textContent = 'סיסמה שגויה';
+  }
+});
+
+let deleteOrgId = null;
+function openDeleteOrg(id) {
+  const o = orgsCache.find(x => String(x.id) === String(id));
+  if (!o) return;
+  if (!confirm(`למחוק לצמיתות את הארגון "${o.name}"?\n\nכל נתוני העובדים, הנוכחות וההיעדרויות של הארגון הזה יימחקו יחד איתו. לא ניתן לשחזר פעולה זו.`)) return;
+  deleteOrgId = id;
+  document.getElementById('delete-org-password').value = '';
+  document.getElementById('delete-org-msg').textContent = '';
+  document.getElementById('delete-org-overlay').classList.remove('hidden');
+}
+document.getElementById('delete-org-cancel').addEventListener('click', () => {
+  document.getElementById('delete-org-overlay').classList.add('hidden');
+});
+document.getElementById('delete-org-confirm').addEventListener('click', async () => {
+  const msg = document.getElementById('delete-org-msg');
+  try {
+    await api(`/api/system/organizations/${deleteOrgId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ password: document.getElementById('delete-org-password').value })
+    });
+    document.getElementById('delete-org-overlay').classList.add('hidden');
+    loadOrgs();
   } catch (err) {
     msg.textContent = 'סיסמה שגויה';
   }
