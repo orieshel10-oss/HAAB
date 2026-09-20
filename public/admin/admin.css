@@ -132,17 +132,22 @@ body { background: var(--bg); }
 
 .pw-wrap { position: relative; }
 .pw-wrap input { padding-left: 38px !important; }
-.pw-toggle {
+/* Extra-specific selector: some contexts (e.g. .login-card button) style bare <button>
+   elements generically, which would otherwise override this icon-sized toggle button. */
+.pw-wrap .pw-toggle {
   position: absolute;
   left: 4px;
   top: 50%;
   transform: translateY(-50%);
+  width: auto;
+  height: auto;
   background: none;
   border: none;
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
   padding: 6px;
+  margin: 0;
   color: var(--text-muted);
 }
 .form-msg.success { color: var(--green-dark); }
