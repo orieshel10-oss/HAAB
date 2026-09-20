@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - כניסת מנהל ארגון</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="login-page">
+  <div class="login-card">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1>HAAB</h1>
+    <div class="subtitle">כניסת מנהל ארגון / מנהלן נוכחות</div>
+    <form id="login-form">
+      <div>
+        <label for="org-code">קוד ארגון</label>
+        <input type="text" id="org-code" required inputmode="numeric" maxlength="6" />
+      </div>
+      <div>
+        <label for="email">כתובת מייל</label>
+        <input type="email" id="email" required autocomplete="username" />
+      </div>
+      <div>
+        <label for="password">סיסמה</label>
+        <div class="pw-wrap">
+          <input type="password" id="password" required autocomplete="current-password" />
+          <button type="button" id="password-toggle" class="pw-toggle">👁</button>
+        </div>
+      </div>
+      <div>
+        <label for="totp">קוד מ-Google Authenticator</label>
+        <input type="text" id="totp" required inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+      </div>
+      <div class="error-msg" id="error-msg"></div>
+      <button type="submit" id="submit-btn">כניסה</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const form = document.getElementById('login-form');
+const errorMsg = document.getElementById('error-msg');
+const submitBtn = document.getElementById('submit-btn');
+wirePasswordToggle('password', 'password-toggle');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errorMsg.textContent = '';
+  submitBtn.disabled = true;
+  try {
+    const res = await fetch('/api/org/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgCode: document.getElementById('org-code').value.trim(),
+        email: document.getElementById('email').value.trim(),
+        password: document.getElementById('password').value,
+        totp: document.getElementById('totp').value.trim()
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errorMsg.textContent = data.error === 'invalid credentials' ? 'קוד ארגון, מייל או סיסמה שגויים'
+        : data.error === 'invalid authenticator code' ? 'קוד האימות שגוי'
+        : 'שגיאה בכניסה';
+      submitBtn.disabled = false;
+      return;
+    }
+    window.location.href = 'employees.html';
+  } catch (err) {
+    errorMsg.textContent = 'שגיאת תקשורת עם השרת';
+    submitBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

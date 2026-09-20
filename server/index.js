@@ -6,6 +6,7 @@ const session = require('express-session');
 const pgSessionStore = require('connect-pg-simple')(session);
 const { pool, init } = require('./db');
 const systemAdminRouter = require('./routes/systemAdmin');
+const orgPortalRouter = require('./routes/orgPortal');
 const {
   ABSENCE_TYPES,
   pad,
@@ -35,6 +36,7 @@ app.use(session({
 }));
 
 app.use('/api/system', systemAdminRouter);
+app.use('/api/org', orgPortalRouter);
 
 // Phase 1: single client / single employee, no auth yet.
 const CLIENT_ID = Number(process.env.CLIENT_ID || 1);

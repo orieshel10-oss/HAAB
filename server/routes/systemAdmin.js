@@ -8,6 +8,7 @@ const {
   verifyTotpCode,
   requireSystemAdmin
 } = require('../auth');
+const { updateOrgAdmin, deleteOrgAdmin, ADMIN_TYPES } = require('../orgAdmins');
 
 const router = express.Router();
 
@@ -16,7 +17,6 @@ function asyncHandler(fn) {
 }
 
 const SUB_ORG_TYPES = ['factory_unit', 'division', 'department'];
-const ADMIN_TYPES = ['org_admin', 'time_admin'];
 
 /* ---------- auth ---------- */
 
@@ -36,6 +36,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   req.session.systemAdminId = admin.id;
   req.session.systemAdminEmail = admin.email;
   delete req.session.enteredOrgId;
+  delete req.session.orgAdminId;
   res.json({ ok: true, admin: { id: admin.id, email: admin.email, name: admin.name, isRoot: admin.is_root } });
 }));
 
@@ -347,73 +348,19 @@ router.post('/organizations/:id/admins', asyncHandler(async (req, res) => {
 // (Phase 2), so there is only the System Admin path to gate on for now. Revisit this check once
 // Org Admin sessions exist: allow it when req.session.orgAdminId's org_id matches AND the target
 // row's admin_type is 'time_admin'.
+// System Admin may edit/delete either admin_type - no restriction passed to the shared helpers.
 router.put('/organizations/:orgId/admins/:id', asyncHandler(async (req, res) => {
   const { orgId, id } = req.params;
-  const { name, email, adminType, subOrgIds, password } = req.body || {};
-  if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
-  if (!ADMIN_TYPES.includes(adminType)) {
-    return res.status(400).json({ error: `adminType must be one of ${ADMIN_TYPES.join(', ')}` });
-  }
-  if (adminType === 'time_admin' && (!Array.isArray(subOrgIds) || subOrgIds.length === 0)) {
-    return res.status(400).json({ error: 'time_admin requires at least one sub-organization in subOrgIds' });
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    let updated;
-    try {
-      const { rows } = password
-        ? await client.query(
-            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3, password_hash = $4
-             WHERE id = $5 AND org_id = $6 RETURNING id, email, name, admin_type`,
-            [name, email, adminType, await hashPassword(password), Number(id), Number(orgId)]
-          )
-        : await client.query(
-            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3
-             WHERE id = $4 AND org_id = $5 RETURNING id, email, name, admin_type`,
-            [name, email, adminType, Number(id), Number(orgId)]
-          );
-      updated = rows[0];
-    } catch (err) {
-      if (err.code === '23505') {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'this email is already an admin for this organization' });
-      }
-      throw err;
-    }
-    if (!updated) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'not found' });
-    }
-
-    await client.query('DELETE FROM org_admin_sub_orgs WHERE org_admin_id = $1', [Number(id)]);
-    if (adminType === 'time_admin') {
-      const validSubOrgs = await client.query(
-        'SELECT id FROM sub_organizations WHERE org_id = $1 AND id = ANY($2::int[])',
-        [orgId, subOrgIds]
-      );
-      if (validSubOrgs.rows.length !== subOrgIds.length) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'one or more subOrgIds do not belong to this organization' });
-      }
-      for (const subOrgId of subOrgIds) {
-        await client.query('INSERT INTO org_admin_sub_orgs (org_admin_id, sub_org_id) VALUES ($1, $2)', [id, subOrgId]);
-      }
-    }
-
-    await client.query('COMMIT');
-    res.json(updated);
-  } finally {
-    client.release();
-  }
+  const result = await updateOrgAdmin(orgId, id, req.body || {});
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result.data);
 }));
 
 router.delete('/organizations/:orgId/admins/:id', asyncHandler(async (req, res) => {
   const { orgId, id } = req.params;
-  const del = await pool.query('DELETE FROM org_admins WHERE id = $1 AND org_id = $2', [Number(id), Number(orgId)]);
-  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
-  res.json({ ok: true });
+  const result = await deleteOrgAdmin(orgId, id);
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result.data);
 }));
 
 /* ---------- system admins ---------- */

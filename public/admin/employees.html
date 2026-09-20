@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - ניהול עובדים</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1 id="org-title">עובדים</h1>
+    <a href="#" id="back-link" class="hidden">חזרה לניהול הארגון</a>
+    <button id="logout-btn">יציאה</button>
+  </header>
+
+  <div class="admin-content">
+    <div class="role-badge" id="role-badge"></div>
+
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>עובדים</h2>
+        <button class="btn btn-primary btn-small" id="new-emp-btn">+ עובד חדש</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>שם</th><th>ת.ז./דרכון</th><th>נייד</th><th>תת-ארגון</th><th></th><th></th></tr></thead>
+        <tbody id="emp-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+      </table>
+
+      <form class="admin-form hidden" id="emp-form">
+        <div>
+          <label>סוג מזהה</label>
+          <select id="emp-id-type">
+            <option value="israeli_id">תעודת זהות ישראלית</option>
+            <option value="passport">דרכון</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div><label id="emp-id-label">מספר תעודת זהות</label><input id="emp-id-number" required /></div>
+          <div></div>
+        </div>
+        <div class="form-row">
+          <div><label>שם פרטי</label><input id="emp-first-name" required /></div>
+          <div><label>שם משפחה</label><input id="emp-last-name" required /></div>
+        </div>
+        <div class="form-row">
+          <div><label>שם פרטי (אנגלית)</label><input id="emp-first-name-en" /></div>
+          <div><label>שם משפחה (אנגלית)</label><input id="emp-last-name-en" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>מייל</label><input id="emp-email" type="email" /></div>
+          <div><label>נייד</label><input id="emp-mobile" required /></div>
+        </div>
+
+        <div class="modal-section-title">כתובת</div>
+        <div class="form-row">
+          <div class="city-field">
+            <label>עיר</label>
+            <input id="emp-city-search" autocomplete="off" required placeholder="הקלידו לחיפוש..." />
+            <input type="hidden" id="emp-city-code" />
+            <div class="city-suggestions hidden" id="emp-city-suggestions"></div>
+          </div>
+          <div><label>רחוב</label><input id="emp-street" required /></div>
+        </div>
+        <div class="form-row">
+          <div><label>מספר בית</label><input id="emp-house-number" required inputmode="numeric" pattern="\d+" /></div>
+          <div><label>דירה</label><input id="emp-apartment" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>כניסה</label><input id="emp-entrance" /></div>
+          <div><label>מיקוד</label><input id="emp-zip" /></div>
+        </div>
+
+        <div id="emp-subOrg-wrap" class="hidden">
+          <label>תת-ארגון</label>
+          <select id="emp-sub-org"></select>
+        </div>
+
+        <div class="form-msg" id="emp-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="emp-submit-btn">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="emp-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'org-login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+const ROLE_LABELS = { system_admin: 'System Admin', org_admin: 'Org Admin', time_admin: 'Time Admin' };
+let me = null;
+let empsCache = [];
+let subOrgsCache = [];
+let editingEmpId = null;
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  if (me.role === 'system_admin') {
+    await api('/api/system/logout', { method: 'POST' });
+    window.location.href = 'login.html';
+  } else {
+    await api('/api/org/logout', { method: 'POST' });
+    window.location.href = 'org-login.html';
+  }
+});
+
+document.getElementById('emp-id-type').addEventListener('change', (e) => {
+  document.getElementById('emp-id-label').textContent = e.target.value === 'passport' ? 'מספר דרכון' : 'מספר תעודת זהות';
+});
+
+/* ---------- city autocomplete ---------- */
+let cityMap = {};
+let citySearchTimer = null;
+document.getElementById('emp-city-search').addEventListener('input', (e) => {
+  document.getElementById('emp-city-code').value = '';
+  const q = e.target.value.trim();
+  clearTimeout(citySearchTimer);
+  if (q.length < 2) {
+    document.getElementById('emp-city-suggestions').classList.add('hidden');
+    return;
+  }
+  citySearchTimer = setTimeout(async () => {
+    const results = await api(`/api/org/cities?q=${encodeURIComponent(q)}`);
+    cityMap = {};
+    const box = document.getElementById('emp-city-suggestions');
+    box.innerHTML = results.map(c => { cityMap[c.name_he] = c.code; return `<div data-name="${c.name_he}">${c.name_he}</div>`; }).join('');
+    box.classList.toggle('hidden', results.length === 0);
+    box.querySelectorAll('div').forEach(el => {
+      el.addEventListener('click', () => {
+        document.getElementById('emp-city-search').value = el.dataset.name;
+        document.getElementById('emp-city-code').value = cityMap[el.dataset.name];
+        box.classList.add('hidden');
+      });
+    });
+  }, 250);
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.city-field')) document.getElementById('emp-city-suggestions').classList.add('hidden');
+});
+
+/* ---------- sub-orgs ---------- */
+async function loadSubOrgs() {
+  subOrgsCache = await api('/api/org/sub-organizations');
+  const select = document.getElementById('emp-sub-org');
+  select.innerHTML = subOrgsCache.map(s => `<option value="${s.id}">${s.name} (${s.sub_org_code})</option>`).join('');
+  document.getElementById('emp-subOrg-wrap').classList.toggle('hidden', subOrgsCache.length === 0);
+}
+
+/* ---------- employees ---------- */
+async function loadEmployees() {
+  empsCache = await api('/api/org/employees');
+  const tbody = document.getElementById('emp-tbody');
+  const subOrgName = (id) => (subOrgsCache.find(s => s.id === id) || {}).name || '-';
+  tbody.innerHTML = empsCache.length ? empsCache.map(e => `
+    <tr>
+      <td>${[e.first_name, e.last_name].filter(Boolean).join(' ')}</td>
+      <td>${e.id_number || ''} ${e.id_type === 'passport' ? '(דרכון)' : ''}</td>
+      <td>${e.mobile || ''}</td>
+      <td>${e.sub_org_id ? subOrgName(e.sub_org_id) : '-'}</td>
+      <td><button class="btn btn-secondary btn-small edit-emp-btn" data-id="${e.id}">עריכה</button></td>
+      <td><button class="btn btn-danger btn-small delete-emp-btn" data-id="${e.id}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="6">אין עדיין עובדים</td></tr>';
+
+  tbody.querySelectorAll('.edit-emp-btn').forEach(btn => btn.addEventListener('click', () => openEditEmp(btn.dataset.id)));
+  tbody.querySelectorAll('.delete-emp-btn').forEach(btn => btn.addEventListener('click', () => deleteEmp(btn.dataset.id)));
+}
+
+const empForm = document.getElementById('emp-form');
+
+function resetEmpForm() {
+  editingEmpId = null;
+  empForm.reset();
+  document.getElementById('emp-city-code').value = '';
+  document.getElementById('emp-id-label').textContent = 'מספר תעודת זהות';
+  document.getElementById('emp-submit-btn').textContent = 'שמירה';
+}
+
+document.getElementById('new-emp-btn').addEventListener('click', () => {
+  if (!empForm.classList.contains('hidden') && editingEmpId === null) {
+    empForm.classList.add('hidden');
+    return;
+  }
+  resetEmpForm();
+  empForm.classList.remove('hidden');
+});
+document.getElementById('emp-cancel-btn').addEventListener('click', () => {
+  resetEmpForm();
+  empForm.classList.add('hidden');
+});
+
+function openEditEmp(id) {
+  const e = empsCache.find(x => String(x.id) === String(id));
+  if (!e) return;
+  editingEmpId = e.id;
+  document.getElementById('emp-id-type').value = e.id_type;
+  document.getElementById('emp-id-label').textContent = e.id_type === 'passport' ? 'מספר דרכון' : 'מספר תעודת זהות';
+  document.getElementById('emp-id-number').value = e.id_number || '';
+  document.getElementById('emp-first-name').value = e.first_name || '';
+  document.getElementById('emp-last-name').value = e.last_name || '';
+  document.getElementById('emp-first-name-en').value = e.first_name_en || '';
+  document.getElementById('emp-last-name-en').value = e.last_name_en || '';
+  document.getElementById('emp-email').value = e.email || '';
+  document.getElementById('emp-mobile').value = e.mobile || '';
+  document.getElementById('emp-street').value = e.street || '';
+  document.getElementById('emp-house-number').value = e.house_number || '';
+  document.getElementById('emp-apartment').value = e.apartment || '';
+  document.getElementById('emp-entrance').value = e.entrance || '';
+  document.getElementById('emp-zip').value = e.zip_code || '';
+  document.getElementById('emp-city-code').value = e.city_code || '';
+  const cityKnown = Object.entries(cityMap).find(([, code]) => code === e.city_code);
+  document.getElementById('emp-city-search').value = cityKnown ? cityKnown[0] : (e.city_code ? `קוד עיר ${e.city_code}` : '');
+  if (e.sub_org_id) document.getElementById('emp-sub-org').value = e.sub_org_id;
+  document.getElementById('emp-submit-btn').textContent = 'עדכון';
+  document.getElementById('emp-form-msg').textContent = '';
+  empForm.classList.remove('hidden');
+  empForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+const EMP_ERROR_MSGS = {
+  'firstName and lastName are required': 'שם פרטי ושם משפחה חובה',
+  'mobile is required': 'נייד חובה',
+  'city, street and houseNumber are required': 'עיר, רחוב ומספר בית חובה',
+  'houseNumber must contain digits only': 'מספר בית יכול להכיל ספרות בלבד',
+  'idNumber is required': 'יש להזין מספר מזהה',
+  'invalid Israeli ID number': 'מספר תעודת הזהות אינו תקין',
+  'subOrgId is required because this organization has sub-organizations': 'חובה לבחור תת-ארגון',
+  'subOrgId does not belong to this organization': 'תת-הארגון אינו שייך לארגון זה',
+  'not authorized for this sub-organization': 'אין הרשאה לתת-הארגון הזה'
+};
+
+empForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('emp-form-msg');
+  msg.textContent = '';
+  msg.className = 'form-msg';
+  const body = {
+    idType: document.getElementById('emp-id-type').value,
+    idNumber: document.getElementById('emp-id-number').value.trim(),
+    firstName: document.getElementById('emp-first-name').value.trim(),
+    lastName: document.getElementById('emp-last-name').value.trim(),
+    firstNameEn: document.getElementById('emp-first-name-en').value.trim(),
+    lastNameEn: document.getElementById('emp-last-name-en').value.trim(),
+    email: document.getElementById('emp-email').value.trim(),
+    mobile: document.getElementById('emp-mobile').value.trim(),
+    cityCode: document.getElementById('emp-city-code').value || null,
+    street: document.getElementById('emp-street').value.trim(),
+    houseNumber: document.getElementById('emp-house-number').value.trim(),
+    apartment: document.getElementById('emp-apartment').value.trim(),
+    entrance: document.getElementById('emp-entrance').value.trim(),
+    zipCode: document.getElementById('emp-zip').value.trim(),
+    subOrgId: subOrgsCache.length ? Number(document.getElementById('emp-sub-org').value) : null
+  };
+  try {
+    if (editingEmpId) {
+      await api(`/api/org/employees/${editingEmpId}`, { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      await api('/api/org/employees', { method: 'POST', body: JSON.stringify(body) });
+    }
+    resetEmpForm();
+    empForm.classList.add('hidden');
+    loadEmployees();
+  } catch (err) {
+    msg.textContent = EMP_ERROR_MSGS[err.message] || err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+async function deleteEmp(id) {
+  const e = empsCache.find(x => String(x.id) === String(id));
+  if (!e) return;
+  if (!confirm(`למחוק את ${[e.first_name, e.last_name].filter(Boolean).join(' ')}?`)) return;
+  await api(`/api/org/employees/${id}`, { method: 'DELETE' });
+  loadEmployees();
+}
+
+/* ---------- init ---------- */
+api('/api/org/me').then(async (data) => {
+  me = data;
+  document.getElementById('org-title').textContent = me.orgName ? `${me.orgName} (${me.orgCode})` : 'עובדים';
+  document.getElementById('role-badge').textContent = ROLE_LABELS[me.role] + (me.adminName ? ' — ' + me.adminName : '');
+  if (me.role === 'system_admin') {
+    const backLink = document.getElementById('back-link');
+    backLink.href = `organization.html?id=${me.orgId}`;
+    backLink.classList.remove('hidden');
+  }
+  await loadSubOrgs();
+  await loadEmployees();
+});
+</script>
+</body>
+</html>

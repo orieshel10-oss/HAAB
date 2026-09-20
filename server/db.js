@@ -100,6 +100,29 @@ async function init() {
     -- Forward reference for the sub-organization delete guard (Phase 1) even though the full
     -- employee management screens land in Phase 2 - keeps that guard real/testable once they do.
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS sub_org_id INTEGER REFERENCES sub_organizations(id);
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS id_number TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS id_type TEXT NOT NULL DEFAULT 'israeli_id' CHECK (id_type IN ('israeli_id', 'passport'));
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS first_name TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_name TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS first_name_en TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_name_en TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS email TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS mobile TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS city_code INTEGER;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS street TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS house_number TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS apartment TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS entrance TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS zip_code TEXT;
+
+    -- Populated once via scripts/seed-cities.js from the official data.gov.il dataset, not on
+    -- every boot (keeps server startup independent of an external network call).
+    CREATE TABLE IF NOT EXISTS cities (
+      code INTEGER PRIMARY KEY,
+      name_he TEXT NOT NULL,
+      name_en TEXT,
+      district TEXT
+    );
 
     CREATE TABLE IF NOT EXISTS attendance_events (
       id SERIAL PRIMARY KEY,
