@@ -41,7 +41,7 @@ async function main() {
     [ROOT_EMAIL, ROOT_NAME, ROOT_PHONE, passwordHash, totpSecret]
   );
 
-  const uri = totpEnrollUri(totpSecret, ROOT_EMAIL);
+  const uri = totpEnrollUri(totpSecret, `${ROOT_EMAIL} (System Admin - root)`);
   const qr = await qrcode.toString(uri, { type: 'terminal', small: true });
 
   console.log('Root system admin created: id=%d, email=%s', rows[0].id, ROOT_EMAIL);

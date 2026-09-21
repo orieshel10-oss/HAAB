@@ -337,7 +337,13 @@ router.post('/organizations/:id/admins', asyncHandler(async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json({ ...created, totpEnrollUri: totpEnrollUri(totpSecret, email) });
+    // Label includes role + org code: the same email can end up as a System Admin AND an Org/Time
+    // Admin (or an admin in more than one org), and without this the entries look identical in
+    // an authenticator app - easy to enroll the wrong one and get "invalid code" forever after.
+    const orgRow = await pool.query('SELECT org_code FROM organizations WHERE id = $1', [orgId]);
+    const roleLabel = adminType === 'time_admin' ? 'Time Admin' : 'Org Admin';
+    const label = `${email} (${roleLabel} ${orgRow.rows[0] ? orgRow.rows[0].org_code : orgId})`;
+    res.json({ ...created, totpEnrollUri: totpEnrollUri(totpSecret, label) });
   } finally {
     client.release();
   }
@@ -385,7 +391,7 @@ router.post('/system-admins', asyncHandler(async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,false) RETURNING id, email, name, phone`,
       [email, name, phone || null, passwordHash, totpSecret]
     );
-    res.json({ ...rows[0], totpEnrollUri: totpEnrollUri(totpSecret, email) });
+    res.json({ ...rows[0], totpEnrollUri: totpEnrollUri(totpSecret, `${email} (System Admin)`) });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'a system admin with this email already exists' });
     throw err;
