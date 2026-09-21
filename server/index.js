@@ -1,3 +1,11 @@
+// This app's whole notion of a "local date"/"local time" (manual clock entries, day-type/rest-day
+// rules, the sheet's day boundaries, cities/streets, everything) is implicitly Israel time - not
+// whatever timezone the host machine happens to be in. On Render that's UTC, which silently
+// mis-stamped every manual time entry by 2-3 hours (a real bug: a browser reporting "22:00"
+// Israel time got stored as 22:00 UTC). Pinning this before any Date object is constructed makes
+// Node's local-time interpretation match what the app has always assumed, regardless of host.
+process.env.TZ = 'Asia/Jerusalem';
+
 require('dotenv').config();
 
 const express = require('express');
