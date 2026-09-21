@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - הסכמים מאושרים לארגון</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1 id="org-title">הסכמים מאושרים</h1>
+    <a href="#" id="back-link" class="hidden">חזרה</a>
+    <button id="logout-btn">יציאה</button>
+  </header>
+
+  <div class="admin-content">
+    <div class="role-badge" id="role-badge"></div>
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>הסכמי נוכחות</h2>
+      </div>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px;">
+        סמנו אילו הסכמים מתוך קטלוג המוצר מותרים לשיוך לעובדים בארגון זה.
+      </p>
+      <table class="admin-table">
+        <thead><tr><th>מאושר</th><th>קוד</th><th>שם</th><th>תקן יום</th></tr></thead>
+        <tbody id="agr-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'org-login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'error');
+  return data;
+}
+
+const ROLE_LABELS = { system_admin: 'System Admin', org_admin: 'Org Admin', time_admin: 'Time Admin' };
+function minutesToHHMM(m) { return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; }
+
+let me = null;
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  if (me.role === 'system_admin') {
+    await api('/api/system/logout', { method: 'POST' });
+    window.location.href = 'login.html';
+  } else {
+    await api('/api/org/logout', { method: 'POST' });
+    window.location.href = 'org-login.html';
+  }
+});
+
+async function loadAgreements() {
+  const agreements = await api('/api/org/agreements');
+  const readOnly = me.role === 'time_admin';
+  const tbody = document.getElementById('agr-tbody');
+  tbody.innerHTML = agreements.length ? agreements.map(a => `
+    <tr>
+      <td><input type="checkbox" class="agr-toggle" data-code="${a.code}" ${a.enabled ? 'checked' : ''} ${readOnly ? 'disabled' : ''} /></td>
+      <td>${a.code}</td>
+      <td>${a.name}</td>
+      <td>${minutesToHHMM(a.day_standard_minutes)}</td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין הסכמים בקטלוג המוצר</td></tr>';
+
+  tbody.querySelectorAll('.agr-toggle').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      cb.disabled = true;
+      try {
+        await api(`/api/org/agreements/${cb.dataset.code}`, { method: cb.checked ? 'POST' : 'DELETE' });
+      } catch (err) {
+        alert(err.message);
+        cb.checked = !cb.checked;
+      }
+      cb.disabled = false;
+    });
+  });
+}
+
+/* ---------- init ---------- */
+api('/api/org/me').then(async (data) => {
+  me = data;
+  document.getElementById('org-title').textContent = me.orgName ? `הסכמים מאושרים — ${me.orgName}` : 'הסכמים מאושרים';
+  document.getElementById('role-badge').textContent = ROLE_LABELS[me.role] + (me.adminName ? ' — ' + me.adminName : '');
+  const backLink = document.getElementById('back-link');
+  backLink.href = me.role === 'system_admin' ? 'organization.html' : 'employees.html';
+  backLink.classList.remove('hidden');
+  await loadAgreements();
+});
+</script>
+</body>
+</html>

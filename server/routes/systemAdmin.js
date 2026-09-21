@@ -429,4 +429,128 @@ router.delete('/system-admins/:id', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------- attendance agreements (product-level catalog) ---------- */
+
+const HOLIDAY_CALENDARS = ['jewish', 'christian', 'muslim', 'none'];
+
+router.get('/agreements', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM attendance_agreements ORDER BY created_at DESC');
+  res.json(rows);
+}));
+
+function validateAgreementBody(body) {
+  const { code, name, dayStandardMinutes, shortenedDayStandardMinutes, weeklyRestDay, workdaysPerWeek, holidayCalendar } = body || {};
+  if (!/^[A-Za-z0-9]{4}$/.test(code || '')) return { status: 400, error: 'code must be exactly 4 alphanumeric characters' };
+  if (!name || name.length > 20) return { status: 400, error: 'name is required and must be at most 20 characters' };
+  if (!Number.isInteger(dayStandardMinutes) || dayStandardMinutes <= 0) return { status: 400, error: 'dayStandardMinutes must be a positive integer' };
+  if (!Number.isInteger(shortenedDayStandardMinutes) || shortenedDayStandardMinutes <= 0) return { status: 400, error: 'shortenedDayStandardMinutes must be a positive integer' };
+  if (!Number.isInteger(weeklyRestDay) || weeklyRestDay < 0 || weeklyRestDay > 6) return { status: 400, error: 'weeklyRestDay must be 0-6' };
+  if (!Number.isInteger(workdaysPerWeek) || workdaysPerWeek < 1 || workdaysPerWeek > 7) return { status: 400, error: 'workdaysPerWeek must be 1-7' };
+  if (!HOLIDAY_CALENDARS.includes(holidayCalendar)) return { status: 400, error: `holidayCalendar must be one of ${HOLIDAY_CALENDARS.join(', ')}` };
+  return { data: { code, name, description: body.description || null, dayStandardMinutes, shortenedDayStandardMinutes, weeklyRestDay, workdaysPerWeek, holidayCalendar } };
+}
+
+router.post('/agreements', asyncHandler(async (req, res) => {
+  const validation = validateAgreementBody(req.body);
+  if (validation.error) return res.status(validation.status).json({ error: validation.error });
+  const d = validation.data;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO attendance_agreements
+         (code, name, description, day_standard_minutes, shortened_day_standard_minutes, weekly_rest_day, workdays_per_week, holiday_calendar, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [d.code, d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, req.session.systemAdminId]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'agreement code already exists' });
+    throw err;
+  }
+}));
+
+router.put('/agreements/:code', asyncHandler(async (req, res) => {
+  const validation = validateAgreementBody({ ...req.body, code: req.params.code });
+  if (validation.error) return res.status(validation.status).json({ error: validation.error });
+  const d = validation.data;
+  const { rows } = await pool.query(
+    `UPDATE attendance_agreements SET name=$1, description=$2, day_standard_minutes=$3,
+       shortened_day_standard_minutes=$4, weekly_rest_day=$5, workdays_per_week=$6, holiday_calendar=$7
+     WHERE code = $8 RETURNING *`,
+    [d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, req.params.code]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
+}));
+
+router.delete('/agreements/:code', asyncHandler(async (req, res) => {
+  const { rows: employees } = await pool.query(
+    'SELECT id, name FROM employees WHERE agreement_code = $1',
+    [req.params.code]
+  );
+  if (employees.length > 0) {
+    return res.status(409).json({ error: 'has_employees', count: employees.length, employees });
+  }
+  await pool.query('DELETE FROM org_attendance_agreements WHERE agreement_code = $1', [req.params.code]);
+  const del = await pool.query('DELETE FROM attendance_agreements WHERE code = $1', [req.params.code]);
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
+/* ---------- holidays ---------- */
+
+const CALENDAR_TYPES = ['jewish', 'christian', 'muslim'];
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+router.get('/holidays', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM holidays ORDER BY date');
+  res.json(rows);
+}));
+
+router.post('/holidays', asyncHandler(async (req, res) => {
+  const { date, calendarType, name } = req.body || {};
+  if (!ISO_DATE_RE.test(date || '')) return res.status(400).json({ error: 'invalid date' });
+  if (!CALENDAR_TYPES.includes(calendarType)) return res.status(400).json({ error: `calendarType must be one of ${CALENDAR_TYPES.join(', ')}` });
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  const { rows } = await pool.query(
+    'INSERT INTO holidays (date, calendar_type, name) VALUES ($1, $2, $3) RETURNING *',
+    [date, calendarType, name]
+  );
+  res.json(rows[0]);
+}));
+
+router.delete('/holidays/:id', asyncHandler(async (req, res) => {
+  const del = await pool.query('DELETE FROM holidays WHERE id = $1', [Number(req.params.id)]);
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
+/* ---------- special days ---------- */
+
+router.get('/special-days', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM special_days ORDER BY date');
+  res.json(rows);
+}));
+
+router.post('/special-days', asyncHandler(async (req, res) => {
+  const { date, name } = req.body || {};
+  if (!ISO_DATE_RE.test(date || '')) return res.status(400).json({ error: 'invalid date' });
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO special_days (date, name, created_by) VALUES ($1, $2, $3) RETURNING *',
+      [date, name, req.session.systemAdminId]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'a special day already exists on this date' });
+    throw err;
+  }
+}));
+
+router.delete('/special-days/:id', asyncHandler(async (req, res) => {
+  const del = await pool.query('DELETE FROM special_days WHERE id = $1', [Number(req.params.id)]);
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
 module.exports = router;

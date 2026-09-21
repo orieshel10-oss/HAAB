@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - לוחות שנה</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1>לוחות שנה</h1>
+    <a href="dashboard.html">חזרה</a>
+  </header>
+
+  <div class="admin-content">
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>חגים</h2>
+        <button class="btn btn-primary btn-small" id="new-holiday-btn">+ חג</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>תאריך</th><th>לוח</th><th>שם</th><th></th></tr></thead>
+        <tbody id="holidays-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+      </table>
+      <form class="admin-form hidden" id="holiday-form">
+        <div class="form-row">
+          <div><label>תאריך</label><input id="hol-date" placeholder="DD/MM/YYYY" inputmode="numeric" required /><div class="field-msg" id="hol-date-msg"></div></div>
+          <div>
+            <label>לוח</label>
+            <select id="hol-calendar">
+              <option value="jewish">יהודי</option>
+              <option value="christian">נוצרי</option>
+              <option value="muslim">מוסלמי</option>
+            </select>
+          </div>
+        </div>
+        <div><label>שם החג</label><input id="hol-name" required /></div>
+        <div class="form-msg" id="holiday-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="holiday-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>ימים מיוחדים</h2>
+        <button class="btn btn-primary btn-small" id="new-special-btn">+ יום מיוחד</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>תאריך</th><th>שם</th><th></th></tr></thead>
+        <tbody id="special-tbody"><tr class="empty-row"><td colspan="3">טוען...</td></tr></tbody>
+      </table>
+      <form class="admin-form hidden" id="special-form">
+        <div><label>תאריך</label><input id="spec-date" placeholder="DD/MM/YYYY" inputmode="numeric" required /><div class="field-msg" id="spec-date-msg"></div></div>
+        <div><label>שם היום המיוחד</label><input id="spec-name" required /></div>
+        <div class="form-msg" id="special-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="special-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'error');
+  return data;
+}
+function showTempMsg(msgId, text, ms) {
+  const el = document.getElementById(msgId);
+  el.textContent = text; el.className = 'field-msg error';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.textContent = ''; }, ms || 4000);
+}
+function clearMsg(msgId) { const el = document.getElementById(msgId); if (el) { el.textContent = ''; clearTimeout(el._timer); } }
+
+// Same freeform date parser as employees.html - kept local rather than shared since these are
+// separate, independently-loaded pages with no bundler to share a module through.
+function parseFreeformDate(raw) {
+  const s = (raw || '').trim();
+  let day, month, year;
+  let m = s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2}|\d{4})$/);
+  if (m) { [, day, month, year] = m; }
+  else if (/^\d{8}$/.test(s)) { day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 8); }
+  else if (/^\d{6}$/.test(s)) { day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 6); }
+  else return null;
+  day = Number(day); month = Number(month); year = Number(year);
+  if (year < 100) year += 2000;
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return { day, month, year };
+}
+function formatDDMMYYYY({ day, month, year }) { return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`; }
+function toIsoDate({ day, month, year }) { return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }
+function wireDateField(inputId, msgId) {
+  const input = document.getElementById(inputId);
+  input.addEventListener('blur', () => {
+    const raw = input.value.trim();
+    if (!raw) return;
+    const parsed = parseFreeformDate(raw);
+    if (!parsed) { showTempMsg(msgId, 'Invalid date - try DDMMYYYY, DD.MM.YYYY or DD/MM/YYYY'); return; }
+    input.value = formatDDMMYYYY(parsed);
+    clearMsg(msgId);
+  });
+}
+wireDateField('hol-date', 'hol-date-msg');
+wireDateField('spec-date', 'spec-date-msg');
+
+const CAL_LABELS = { jewish: 'יהודי', christian: 'נוצרי', muslim: 'מוסלמי' };
+
+/* ---------- holidays ---------- */
+async function loadHolidays() {
+  const rows = await api('/api/system/holidays');
+  const tbody = document.getElementById('holidays-tbody');
+  tbody.innerHTML = rows.length ? rows.map(h => `
+    <tr>
+      <td>${h.date.split('-').reverse().join('/')}</td>
+      <td>${CAL_LABELS[h.calendar_type]}</td>
+      <td>${h.name}</td>
+      <td><button class="btn btn-danger btn-small del-hol-btn" data-id="${h.id}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין עדיין חגים</td></tr>';
+  tbody.querySelectorAll('.del-hol-btn').forEach(btn => btn.addEventListener('click', async () => {
+    await api(`/api/system/holidays/${btn.dataset.id}`, { method: 'DELETE' });
+    loadHolidays();
+  }));
+}
+const holidayForm = document.getElementById('holiday-form');
+document.getElementById('new-holiday-btn').addEventListener('click', () => holidayForm.classList.toggle('hidden'));
+document.getElementById('holiday-cancel-btn').addEventListener('click', () => { holidayForm.reset(); holidayForm.classList.add('hidden'); });
+holidayForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('holiday-form-msg');
+  msg.textContent = ''; msg.className = 'form-msg';
+  const parsed = parseFreeformDate(document.getElementById('hol-date').value);
+  if (!parsed) { msg.textContent = 'Invalid date'; msg.className = 'form-msg error'; return; }
+  try {
+    await api('/api/system/holidays', {
+      method: 'POST',
+      body: JSON.stringify({ date: toIsoDate(parsed), calendarType: document.getElementById('hol-calendar').value, name: document.getElementById('hol-name').value.trim() })
+    });
+    holidayForm.reset();
+    holidayForm.classList.add('hidden');
+    loadHolidays();
+  } catch (err) {
+    msg.textContent = err.message; msg.className = 'form-msg error';
+  }
+});
+
+/* ---------- special days ---------- */
+async function loadSpecialDays() {
+  const rows = await api('/api/system/special-days');
+  const tbody = document.getElementById('special-tbody');
+  tbody.innerHTML = rows.length ? rows.map(s => `
+    <tr>
+      <td>${s.date.split('-').reverse().join('/')}</td>
+      <td>${s.name}</td>
+      <td><button class="btn btn-danger btn-small del-spec-btn" data-id="${s.id}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="3">אין עדיין ימים מיוחדים</td></tr>';
+  tbody.querySelectorAll('.del-spec-btn').forEach(btn => btn.addEventListener('click', async () => {
+    await api(`/api/system/special-days/${btn.dataset.id}`, { method: 'DELETE' });
+    loadSpecialDays();
+  }));
+}
+const specialForm = document.getElementById('special-form');
+document.getElementById('new-special-btn').addEventListener('click', () => specialForm.classList.toggle('hidden'));
+document.getElementById('special-cancel-btn').addEventListener('click', () => { specialForm.reset(); specialForm.classList.add('hidden'); });
+specialForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('special-form-msg');
+  msg.textContent = ''; msg.className = 'form-msg';
+  const parsed = parseFreeformDate(document.getElementById('spec-date').value);
+  if (!parsed) { msg.textContent = 'Invalid date'; msg.className = 'form-msg error'; return; }
+  try {
+    await api('/api/system/special-days', {
+      method: 'POST',
+      body: JSON.stringify({ date: toIsoDate(parsed), name: document.getElementById('spec-name').value.trim() })
+    });
+    specialForm.reset();
+    specialForm.classList.add('hidden');
+    loadSpecialDays();
+  } catch (err) {
+    msg.textContent = err.message === 'a special day already exists on this date' ? 'כבר קיים יום מיוחד בתאריך הזה' : err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+/* ---------- init ---------- */
+api('/api/system/me').then(async () => {
+  await loadHolidays();
+  await loadSpecialDays();
+});
+</script>
+</body>
+</html>

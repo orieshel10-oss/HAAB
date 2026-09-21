@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - הסכמי נוכחות</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1>הסכמי נוכחות</h1>
+    <a href="dashboard.html">חזרה</a>
+  </header>
+
+  <div class="admin-content">
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>קטלוג הסכמים</h2>
+        <button class="btn btn-primary btn-small" id="new-agr-btn">+ הסכם חדש</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>קוד</th><th>שם</th><th>תקן יום</th><th>יום מקוצר</th><th>יום מנוחה</th><th></th><th></th></tr></thead>
+        <tbody id="agr-tbody"><tr class="empty-row"><td colspan="7">טוען...</td></tr></tbody>
+      </table>
+
+      <form class="admin-form hidden" id="agr-form">
+        <div class="form-row">
+          <div><label>קוד הסכם (4 תווים)</label><input id="agr-code" maxlength="4" required /></div>
+          <div><label>שם ההסכם (עד 20 תווים)</label><input id="agr-name" maxlength="20" required /></div>
+        </div>
+        <div><label>תיאור (לא חובה)</label><textarea id="agr-desc"></textarea></div>
+        <div class="form-row">
+          <div><label>תקן יום רגיל (HH:MM)</label><input id="agr-day-standard" placeholder="08:00" required /></div>
+          <div><label>תקן יום מקוצר (HH:MM)</label><input id="agr-short-standard" placeholder="07:00" required /></div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label>יום מנוחה שבועי</label>
+            <select id="agr-rest-day">
+              <option value="0">ראשון</option><option value="1">שני</option><option value="2">שלישי</option>
+              <option value="3">רביעי</option><option value="4">חמישי</option><option value="5">שישי</option>
+              <option value="6" selected>שבת</option>
+            </select>
+          </div>
+          <div><label>מספר ימי עבודה בשבוע</label><input id="agr-workdays" type="number" min="1" max="7" value="6" required /></div>
+        </div>
+        <div>
+          <label>לוח חגים מקושר</label>
+          <select id="agr-holiday-calendar">
+            <option value="jewish" selected>יהודי</option>
+            <option value="christian">נוצרי</option>
+            <option value="muslim">מוסלמי</option>
+            <option value="none">ללא</option>
+          </select>
+        </div>
+        <div class="form-msg" id="agr-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="agr-submit-btn">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="agr-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+const HOLIDAY_CAL_LABELS = { jewish: 'יהודי', christian: 'נוצרי', muslim: 'מוסלמי', none: 'ללא' };
+let agrCache = [];
+let editingCode = null;
+
+function minutesToHHMM(m) { return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; }
+function hhmmToMinutes(s) {
+  const m = (s || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]), min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+async function loadAgreements() {
+  agrCache = await api('/api/system/agreements');
+  const tbody = document.getElementById('agr-tbody');
+  tbody.innerHTML = agrCache.length ? agrCache.map(a => `
+    <tr>
+      <td>${a.code}</td>
+      <td>${a.name}</td>
+      <td>${minutesToHHMM(a.day_standard_minutes)}</td>
+      <td>${minutesToHHMM(a.shortened_day_standard_minutes)}</td>
+      <td>${['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'][a.weekly_rest_day]}</td>
+      <td><button class="btn btn-secondary btn-small edit-agr-btn" data-code="${a.code}">עריכה</button></td>
+      <td><button class="btn btn-danger btn-small del-agr-btn" data-code="${a.code}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="7">אין עדיין הסכמים</td></tr>';
+
+  tbody.querySelectorAll('.edit-agr-btn').forEach(btn => btn.addEventListener('click', () => openEditAgr(btn.dataset.code)));
+  tbody.querySelectorAll('.del-agr-btn').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm(`למחוק את ההסכם ${btn.dataset.code}?`)) return;
+    try {
+      await api(`/api/system/agreements/${btn.dataset.code}`, { method: 'DELETE' });
+      loadAgreements();
+    } catch (err) {
+      if (err.data && err.data.error === 'has_employees') {
+        alert(`יש ${err.data.count} עובדים המשויכים להסכם זה. לא ניתן למחוק אותו כל עוד יש עובדים משויכים אליו.`);
+      } else {
+        alert(err.message);
+      }
+    }
+  }));
+}
+
+const agrForm = document.getElementById('agr-form');
+function resetAgrForm() {
+  editingCode = null;
+  agrForm.reset();
+  document.getElementById('agr-code').disabled = false;
+  document.getElementById('agr-submit-btn').textContent = 'שמירה';
+  document.getElementById('agr-rest-day').value = '6';
+  document.getElementById('agr-workdays').value = '6';
+}
+document.getElementById('new-agr-btn').addEventListener('click', () => {
+  if (!agrForm.classList.contains('hidden') && editingCode === null) { agrForm.classList.add('hidden'); return; }
+  resetAgrForm();
+  agrForm.classList.remove('hidden');
+});
+document.getElementById('agr-cancel-btn').addEventListener('click', () => { resetAgrForm(); agrForm.classList.add('hidden'); });
+
+function openEditAgr(code) {
+  const a = agrCache.find(x => x.code === code);
+  if (!a) return;
+  editingCode = code;
+  document.getElementById('agr-code').value = a.code;
+  document.getElementById('agr-code').disabled = true;
+  document.getElementById('agr-name').value = a.name;
+  document.getElementById('agr-desc').value = a.description || '';
+  document.getElementById('agr-day-standard').value = minutesToHHMM(a.day_standard_minutes);
+  document.getElementById('agr-short-standard').value = minutesToHHMM(a.shortened_day_standard_minutes);
+  document.getElementById('agr-rest-day').value = a.weekly_rest_day;
+  document.getElementById('agr-workdays').value = a.workdays_per_week;
+  document.getElementById('agr-holiday-calendar').value = a.holiday_calendar;
+  document.getElementById('agr-submit-btn').textContent = 'עדכון';
+  document.getElementById('agr-form-msg').textContent = '';
+  agrForm.classList.remove('hidden');
+  agrForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+const AGR_ERROR_MSGS = {
+  'code must be exactly 4 alphanumeric characters': 'קוד ההסכם חייב להיות בדיוק 4 תווים (אותיות/ספרות)',
+  'name is required and must be at most 20 characters': 'שם ההסכם חובה ועד 20 תווים',
+  'agreement code already exists': 'קוד ההסכם כבר קיים'
+};
+
+agrForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('agr-form-msg');
+  msg.textContent = ''; msg.className = 'form-msg';
+
+  const dayStandardMinutes = hhmmToMinutes(document.getElementById('agr-day-standard').value);
+  const shortenedDayStandardMinutes = hhmmToMinutes(document.getElementById('agr-short-standard').value);
+  if (dayStandardMinutes === null || shortenedDayStandardMinutes === null) {
+    msg.textContent = 'Invalid time - use HH:MM format';
+    msg.className = 'form-msg error';
+    return;
+  }
+
+  const body = {
+    name: document.getElementById('agr-name').value.trim(),
+    description: document.getElementById('agr-desc').value.trim(),
+    dayStandardMinutes, shortenedDayStandardMinutes,
+    weeklyRestDay: Number(document.getElementById('agr-rest-day').value),
+    workdaysPerWeek: Number(document.getElementById('agr-workdays').value),
+    holidayCalendar: document.getElementById('agr-holiday-calendar').value
+  };
+  try {
+    if (editingCode) {
+      await api(`/api/system/agreements/${editingCode}`, { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      body.code = document.getElementById('agr-code').value.trim();
+      await api('/api/system/agreements', { method: 'POST', body: JSON.stringify(body) });
+    }
+    resetAgrForm();
+    agrForm.classList.add('hidden');
+    loadAgreements();
+  } catch (err) {
+    msg.textContent = AGR_ERROR_MSGS[err.message] || err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+/* ---------- init ---------- */
+api('/api/system/me').then(loadAgreements);
+</script>
+</body>
+</html>

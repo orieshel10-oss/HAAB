@@ -117,6 +117,48 @@ async function init() {
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS employment_start_date TEXT;
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS employment_end_date TEXT;
 
+    -- Product-level catalog, defined by System Admin (Phase 3: structured form; Phase 4 adds the
+    -- AI conversational "expert" flow on top of the same fields).
+    CREATE TABLE IF NOT EXISTS attendance_agreements (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      day_standard_minutes INTEGER NOT NULL DEFAULT 480,
+      shortened_day_standard_minutes INTEGER NOT NULL DEFAULT 420,
+      weekly_rest_day INTEGER NOT NULL DEFAULT 6,
+      workdays_per_week INTEGER NOT NULL DEFAULT 6,
+      holiday_calendar TEXT NOT NULL DEFAULT 'jewish' CHECK (holiday_calendar IN ('jewish', 'christian', 'muslim', 'none')),
+      created_by INTEGER REFERENCES system_admins(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- Whitelist: which catalog agreements a given org may actually assign to its employees.
+    CREATE TABLE IF NOT EXISTS org_attendance_agreements (
+      org_id INTEGER NOT NULL REFERENCES organizations(id),
+      agreement_code TEXT NOT NULL REFERENCES attendance_agreements(code),
+      PRIMARY KEY (org_id, agreement_code)
+    );
+
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS agreement_code TEXT REFERENCES attendance_agreements(code);
+
+    -- Populated once via scripts/seed-holidays.js (inline data, no external API). One row per
+    -- observed calendar day, so "is this date a holiday" is a plain existence check.
+    CREATE TABLE IF NOT EXISTS holidays (
+      id SERIAL PRIMARY KEY,
+      date TEXT NOT NULL,
+      calendar_type TEXT NOT NULL CHECK (calendar_type IN ('jewish', 'christian', 'muslim')),
+      name TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_holidays_date_calendar ON holidays(date, calendar_type);
+
+    CREATE TABLE IF NOT EXISTS special_days (
+      id SERIAL PRIMARY KEY,
+      date TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_by INTEGER REFERENCES system_admins(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     -- Populated once via scripts/seed-streets.js from the official data.gov.il dataset (~51k
     -- rows), not on every boot. A street code is only unique within its city, hence the
     -- composite key.
@@ -168,6 +210,13 @@ async function init() {
     const org = await pool.query("INSERT INTO organizations (name) VALUES ('לקוח ראשון') RETURNING id");
     await pool.query('INSERT INTO employees (client_id, name) VALUES ($1, $2)', [org.rows[0].id, 'עובד ראשי']);
   }
+
+  // A single fixed row the user asked for explicitly (not a bulk external dataset like
+  // holidays, hence seeded here rather than via a standalone script).
+  await pool.query(
+    `INSERT INTO special_days (date, name) VALUES ('2026-10-27', 'יום בחירות')
+     ON CONFLICT (date) DO NOTHING`
+  );
 }
 
 module.exports = { pool, init };

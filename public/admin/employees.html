@@ -15,6 +15,7 @@
   <header class="admin-header">
     <img src="../icons/icon-192.png" alt="HAAB" />
     <h1 id="org-title">עובדים</h1>
+    <a href="org-agreements.html" id="agreements-link" class="hidden">הסכמים מאושרים</a>
     <a href="#" id="back-link" class="hidden">חזרה לניהול הארגון</a>
     <button id="logout-btn">יציאה</button>
   </header>
@@ -103,6 +104,11 @@
         <div id="emp-subOrg-wrap" class="hidden">
           <label>תת-ארגון</label>
           <select id="emp-sub-org"></select>
+        </div>
+
+        <div>
+          <label>הסכם נוכחות</label>
+          <select id="emp-agreement" required></select>
         </div>
 
         <div class="form-msg" id="emp-form-msg"></div>
@@ -377,6 +383,15 @@ async function loadSubOrgs() {
   document.getElementById('emp-subOrg-wrap').classList.toggle('hidden', subOrgsCache.length === 0);
 }
 
+let agreementsCache = [];
+async function loadAgreements() {
+  const all = await api('/api/org/agreements');
+  agreementsCache = all.filter(a => a.enabled);
+  const select = document.getElementById('emp-agreement');
+  select.innerHTML = agreementsCache.map(a => `<option value="${a.code}">${a.name} (${a.code})</option>`).join('')
+    || '<option value="">אין הסכמים מאושרים לארגון זה</option>';
+}
+
 /* ---------- employees ---------- */
 async function loadEmployees() {
   empsCache = await api(`/api/org/employees?status=${employeeFilter}`);
@@ -448,6 +463,7 @@ function openEditEmp(id) {
     }).catch(() => {});
   }
   if (e.sub_org_id) document.getElementById('emp-sub-org').value = e.sub_org_id;
+  if (e.agreement_code) document.getElementById('emp-agreement').value = e.agreement_code;
   document.getElementById('emp-submit-btn').textContent = 'עדכון';
   document.getElementById('emp-form-msg').textContent = '';
   empForm.classList.remove('hidden');
@@ -468,6 +484,8 @@ const EMP_ERROR_MSGS = {
   'employmentStartDate is required': 'Start date is required',
   'invalid employmentStartDate': 'Invalid start date',
   'invalid employmentEndDate': 'Invalid end date',
+  'agreementCode is required': 'חובה לבחור הסכם נוכחות',
+  'agreementCode is not enabled for this organization': 'ההסכם הזה אינו מאושר לארגון',
   'idNumber is required': 'יש להזין מספר מזהה',
   'invalid Israeli ID number': 'מספר תעודת הזהות אינו תקין',
   'subOrgId is required because this organization has sub-organizations': 'חובה לבחור תת-ארגון',
@@ -518,7 +536,8 @@ empForm.addEventListener('submit', async (e) => {
     zipCode: document.getElementById('emp-zip').value.trim(),
     employmentStartDate: startDateIso,
     employmentEndDate: endDateIso,
-    subOrgId: subOrgsCache.length ? Number(document.getElementById('emp-sub-org').value) : null
+    subOrgId: subOrgsCache.length ? Number(document.getElementById('emp-sub-org').value) : null,
+    agreementCode: document.getElementById('emp-agreement').value
   };
   try {
     if (editingEmpId) {
@@ -553,7 +572,9 @@ api('/api/org/me').then(async (data) => {
     backLink.href = `organization.html?id=${me.orgId}`;
     backLink.classList.remove('hidden');
   }
+  document.getElementById('agreements-link').classList.toggle('hidden', me.role === 'time_admin');
   await loadSubOrgs();
+  await loadAgreements();
   await loadEmployees();
 });
 </script>

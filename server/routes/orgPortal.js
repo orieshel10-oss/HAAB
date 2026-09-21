@@ -111,7 +111,7 @@ router.get('/sub-organizations', asyncHandler(async (req, res) => {
 
 const EMPLOYEE_COLUMNS = `id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
   email, mobile, city_code, street, house_number, apartment, entrance, zip_code, sub_org_id,
-  employment_start_date, employment_end_date`;
+  employment_start_date, employment_end_date, agreement_code`;
 
 // Active = today is on/after the start date (or no start date set) AND on/before the end date
 // (or no end date set) - so a brand-new employee with neither date is active by default, and
@@ -148,7 +148,7 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   const {
     idNumber, idType, firstName, lastName, firstNameEn, lastNameEn,
     email, mobile, cityCode, street, houseNumber, apartment, entrance, zipCode, subOrgId,
-    employmentStartDate, employmentEndDate
+    employmentStartDate, employmentEndDate, agreementCode
   } = body || {};
 
   if (!firstName || !lastName) return { status: 400, error: 'firstName and lastName are required' };
@@ -164,6 +164,12 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   if (!employmentStartDate) return { status: 400, error: 'employmentStartDate is required' };
   if (!ISO_DATE_RE.test(employmentStartDate)) return { status: 400, error: 'invalid employmentStartDate' };
   if (employmentEndDate && !ISO_DATE_RE.test(employmentEndDate)) return { status: 400, error: 'invalid employmentEndDate' };
+  if (!agreementCode) return { status: 400, error: 'agreementCode is required' };
+  const whitelisted = await pool.query(
+    'SELECT 1 FROM org_attendance_agreements WHERE org_id = $1 AND agreement_code = $2',
+    [orgId, agreementCode]
+  );
+  if (!whitelisted.rows[0]) return { status: 400, error: 'agreementCode is not enabled for this organization' };
 
   const type = idType === 'passport' ? 'passport' : 'israeli_id';
   if (type === 'passport') {
@@ -191,7 +197,8 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
       email: email || null, mobile, cityCode, street, houseNumber: String(houseNumber),
       apartment: apartment || null, entrance: entrance || null, zipCode: zipCode || null,
       subOrgId: subOrgId || null,
-      employmentStartDate: employmentStartDate || null, employmentEndDate: employmentEndDate || null
+      employmentStartDate: employmentStartDate || null, employmentEndDate: employmentEndDate || null,
+      agreementCode
     }
   };
 }
@@ -207,12 +214,12 @@ router.post('/employees', asyncHandler(async (req, res) => {
     `INSERT INTO employees
        (client_id, name, sub_org_id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
         email, mobile, city_code, street, house_number, apartment, entrance, zip_code,
-        employment_start_date, employment_end_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        employment_start_date, employment_end_date, agreement_code)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      RETURNING ${EMPLOYEE_COLUMNS}`,
     [orgId, name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
       d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
-      d.employmentStartDate, d.employmentEndDate]
+      d.employmentStartDate, d.employmentEndDate, d.agreementCode]
   );
   res.json(rows[0]);
 }));
@@ -238,12 +245,13 @@ router.put('/employees/:id', asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     `UPDATE employees SET name=$1, sub_org_id=$2, id_number=$3, id_type=$4, first_name=$5, last_name=$6,
        first_name_en=$7, last_name_en=$8, email=$9, mobile=$10, city_code=$11, street=$12, house_number=$13,
-       apartment=$14, entrance=$15, zip_code=$16, employment_start_date=$17, employment_end_date=$18
-     WHERE id = $19 AND client_id = $20
+       apartment=$14, entrance=$15, zip_code=$16, employment_start_date=$17, employment_end_date=$18,
+       agreement_code=$19
+     WHERE id = $20 AND client_id = $21
      RETURNING ${EMPLOYEE_COLUMNS}`,
     [name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
       d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
-      d.employmentStartDate, d.employmentEndDate,
+      d.employmentStartDate, d.employmentEndDate, d.agreementCode,
       Number(req.params.id), orgId]
   );
   res.json(rows[0]);
@@ -280,6 +288,38 @@ router.delete('/time-admins/:id', asyncHandler(async (req, res) => {
   const result = await deleteOrgAdmin(orgId, req.params.id, 'time_admin');
   if (result.error) return res.status(result.status).json({ error: result.error });
   res.json(result.data);
+}));
+
+/* ---------- attendance agreements (org whitelist) ---------- */
+// Read-only browsing of the full catalog is fine for any role (Time Admin included, since they
+// need to see an employee's assigned agreement); toggling the whitelist is System Admin / Org
+// Admin only, same guard style as the time-admin routes above.
+
+router.get('/agreements', asyncHandler(async (req, res) => {
+  const { orgId } = req.orgContext;
+  const { rows: catalog } = await pool.query('SELECT * FROM attendance_agreements ORDER BY name');
+  const { rows: enabledRows } = await pool.query('SELECT agreement_code FROM org_attendance_agreements WHERE org_id = $1', [orgId]);
+  const enabledSet = new Set(enabledRows.map((r) => r.agreement_code));
+  res.json(catalog.map((a) => ({ ...a, enabled: enabledSet.has(a.code) })));
+}));
+
+router.post('/agreements/:code', asyncHandler(async (req, res) => {
+  const { orgId, role } = req.orgContext;
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  const agreement = await pool.query('SELECT code FROM attendance_agreements WHERE code = $1', [req.params.code]);
+  if (!agreement.rows[0]) return res.status(404).json({ error: 'not found' });
+  await pool.query(
+    'INSERT INTO org_attendance_agreements (org_id, agreement_code) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [orgId, req.params.code]
+  );
+  res.json({ ok: true });
+}));
+
+router.delete('/agreements/:code', asyncHandler(async (req, res) => {
+  const { orgId, role } = req.orgContext;
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  await pool.query('DELETE FROM org_attendance_agreements WHERE org_id = $1 AND agreement_code = $2', [orgId, req.params.code]);
+  res.json({ ok: true });
 }));
 
 module.exports = router;
