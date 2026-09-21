@@ -384,4 +384,52 @@ router.delete('/agreements/:code', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------- report types (org whitelist) ---------- */
+// Same read-any-role / write-not-time_admin pattern as the attendance-agreements whitelist above.
+
+router.get('/report-types', asyncHandler(async (req, res) => {
+  const { orgId } = req.orgContext;
+  const { rows: catalog } = await pool.query('SELECT * FROM report_types ORDER BY name');
+  const { rows: whitelistRows } = await pool.query(
+    'SELECT type_code, effective_from, effective_until FROM org_report_types WHERE org_id = $1',
+    [orgId]
+  );
+  const byCode = {};
+  whitelistRows.forEach((r) => { byCode[r.type_code] = r; });
+  res.json(catalog.map((t) => ({
+    ...t,
+    effectiveFrom: byCode[t.code] ? byCode[t.code].effective_from : null,
+    effectiveUntil: byCode[t.code] ? byCode[t.code].effective_until : null,
+    whitelisted: Boolean(byCode[t.code])
+  })));
+}));
+
+router.put('/report-types/:code', asyncHandler(async (req, res) => {
+  const { orgId, role } = req.orgContext;
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  const { effectiveFrom, effectiveUntil } = req.body || {};
+  const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if (effectiveFrom && !ISO_DATE_RE.test(effectiveFrom)) return res.status(400).json({ error: 'invalid effectiveFrom' });
+  if (effectiveUntil && !ISO_DATE_RE.test(effectiveUntil)) return res.status(400).json({ error: 'invalid effectiveUntil' });
+  if (effectiveFrom && effectiveUntil && effectiveFrom > effectiveUntil) {
+    return res.status(400).json({ error: 'effectiveFrom must be on or before effectiveUntil' });
+  }
+  const type = await pool.query('SELECT code FROM report_types WHERE code = $1', [req.params.code]);
+  if (!type.rows[0]) return res.status(404).json({ error: 'not found' });
+  await pool.query(
+    `INSERT INTO org_report_types (org_id, type_code, effective_from, effective_until)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (org_id, type_code) DO UPDATE SET effective_from = $3, effective_until = $4`,
+    [orgId, req.params.code, effectiveFrom || null, effectiveUntil || null]
+  );
+  res.json({ ok: true });
+}));
+
+router.delete('/report-types/:code', asyncHandler(async (req, res) => {
+  const { orgId, role } = req.orgContext;
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  await pool.query('DELETE FROM org_report_types WHERE org_id = $1 AND type_code = $2', [orgId, req.params.code]);
+  res.json({ ok: true });
+}));
+
 module.exports = router;

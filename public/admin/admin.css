@@ -223,3 +223,6 @@ body { background: var(--bg); }
 .modal-overlay-simple.hidden { display: none; }
 .modal-card-simple { background: var(--card-bg); border-radius: 16px; padding: 20px; width: 100%; max-width: 340px; }
 .modal-card-simple h3 { margin: 0 0 12px; font-size: 15px; }
+.modal-card-form { max-width: 480px; max-height: 88vh; overflow-y: auto; }
+.modal-card-form h3 { font-size: 16px; }
+.modal-section-title { font-size: 13px; font-weight: 700; color: var(--brand-dark); margin: 14px 0 2px; }

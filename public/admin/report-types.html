@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - סוגי נוכחות והיעדרות</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <header class="admin-header">
+    <img src="../icons/icon-192.png" alt="HAAB" />
+    <h1>סוגי נוכחות והיעדרות</h1>
+    <a href="dashboard.html">חזרה</a>
+  </header>
+
+  <div class="admin-content">
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>קטלוג סוגים</h2>
+        <button class="btn btn-primary btn-small" id="new-rt-btn">+ סוג חדש</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>קוד</th><th>שם</th><th>קטגוריה</th><th></th><th></th></tr></thead>
+        <tbody id="rt-tbody"><tr class="empty-row"><td colspan="5">טוען...</td></tr></tbody>
+      </table>
+
+      <form class="admin-form hidden" id="rt-form">
+        <div class="form-row">
+          <div><label>קוד (אותיות אנגלית קטנות/מספרים/קו תחתון)</label><input id="rt-code" maxlength="30" required /></div>
+          <div><label>שם (עד 30 תווים)</label><input id="rt-name" maxlength="30" required /></div>
+        </div>
+        <div>
+          <label>קטגוריה</label>
+          <select id="rt-category">
+            <option value="presence">נוכחות (כולל מחוץ למשרד)</option>
+            <option value="absence">היעדרות</option>
+          </select>
+        </div>
+        <div class="form-msg" id="rt-form-msg"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="rt-submit-btn">שמירה</button>
+          <button type="button" class="btn btn-secondary" id="rt-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+const CATEGORY_LABELS = { presence: 'נוכחות', absence: 'היעדרות' };
+let rtCache = [];
+let editingCode = null;
+
+async function loadReportTypes() {
+  rtCache = await api('/api/system/report-types');
+  const tbody = document.getElementById('rt-tbody');
+  tbody.innerHTML = rtCache.length ? rtCache.map(t => `
+    <tr>
+      <td>${t.code}</td>
+      <td>${t.name}</td>
+      <td><span class="badge ${t.category === 'absence' ? 'badge-time-admin' : 'badge-org-admin'}">${CATEGORY_LABELS[t.category]}</span></td>
+      <td><button class="btn btn-secondary btn-small edit-rt-btn" data-code="${t.code}">עריכה</button></td>
+      <td><button class="btn btn-danger btn-small del-rt-btn" data-code="${t.code}">מחיקה</button></td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="5">אין עדיין סוגים</td></tr>';
+
+  tbody.querySelectorAll('.edit-rt-btn').forEach(btn => btn.addEventListener('click', () => openEditRt(btn.dataset.code)));
+  tbody.querySelectorAll('.del-rt-btn').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm(`למחוק את הסוג ${btn.dataset.code}?`)) return;
+    try {
+      await api(`/api/system/report-types/${btn.dataset.code}`, { method: 'DELETE' });
+      loadReportTypes();
+    } catch (err) {
+      if (err.data && err.data.error === 'in_use') {
+        alert('לא ניתן למחוק סוג זה - יש דיווחים קיימים מסוג זה במערכת.');
+      } else {
+        alert(err.message);
+      }
+    }
+  }));
+}
+
+const rtForm = document.getElementById('rt-form');
+function resetRtForm() {
+  editingCode = null;
+  rtForm.reset();
+  document.getElementById('rt-code').disabled = false;
+  document.getElementById('rt-submit-btn').textContent = 'שמירה';
+}
+document.getElementById('new-rt-btn').addEventListener('click', () => {
+  if (!rtForm.classList.contains('hidden') && editingCode === null) { rtForm.classList.add('hidden'); return; }
+  resetRtForm();
+  rtForm.classList.remove('hidden');
+});
+document.getElementById('rt-cancel-btn').addEventListener('click', () => { resetRtForm(); rtForm.classList.add('hidden'); });
+
+function openEditRt(code) {
+  const t = rtCache.find(x => x.code === code);
+  if (!t) return;
+  editingCode = code;
+  document.getElementById('rt-code').value = t.code;
+  document.getElementById('rt-code').disabled = true;
+  document.getElementById('rt-name').value = t.name;
+  document.getElementById('rt-category').value = t.category;
+  document.getElementById('rt-submit-btn').textContent = 'עדכון';
+  document.getElementById('rt-form-msg').textContent = '';
+  rtForm.classList.remove('hidden');
+  rtForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+const RT_ERROR_MSGS = {
+  'code must be lowercase letters/digits/underscores, 2-30 characters, starting with a letter': 'הקוד חייב להכיל אותיות אנגלית קטנות/מספרים/קו תחתון, 2-30 תווים, ומתחיל באות',
+  'name is required and must be at most 30 characters': 'שם חובה ועד 30 תווים',
+  'report type code already exists': 'הקוד הזה כבר קיים'
+};
+
+rtForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('rt-form-msg');
+  msg.textContent = ''; msg.className = 'form-msg';
+
+  const body = {
+    name: document.getElementById('rt-name').value.trim(),
+    category: document.getElementById('rt-category').value
+  };
+  try {
+    if (editingCode) {
+      await api(`/api/system/report-types/${editingCode}`, { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      body.code = document.getElementById('rt-code').value.trim();
+      await api('/api/system/report-types', { method: 'POST', body: JSON.stringify(body) });
+    }
+    resetRtForm();
+    rtForm.classList.add('hidden');
+    loadReportTypes();
+  } catch (err) {
+    msg.textContent = RT_ERROR_MSGS[err.message] || err.message;
+    msg.className = 'form-msg error';
+  }
+});
+
+/* ---------- init ---------- */
+api('/api/system/me').then(loadReportTypes);
+</script>
+</body>
+</html>

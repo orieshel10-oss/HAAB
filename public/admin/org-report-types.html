@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - סוגי נוכחות בארגון</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <div id="org-header-root"></div>
+
+  <div class="admin-content">
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>סוגי נוכחות והיעדרות</h2>
+      </div>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px;">
+        לכל סוג מקטלוג המוצר ניתן להגדיר תחילת ותאריך סיום תוקף לדיווח בארגון זה. השארת השדות ריקים משמעה תוקף ללא הגבלת זמן.
+      </p>
+      <table class="admin-table">
+        <thead><tr><th>קוד</th><th>שם</th><th>קטגוריה</th><th>תחילת תוקף</th><th>סיום תוקף</th><th></th></tr></thead>
+        <tbody id="rt-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'org-login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+const CATEGORY_LABELS = { presence: 'נוכחות', absence: 'היעדרות' };
+
+// Same freeform date parser used in employees.html/calendars.html/org-agreements.html - kept
+// local since these are separate, independently-loaded pages with no bundler to share through.
+function parseFreeformDate(raw) {
+  const s = (raw || '').trim();
+  if (!s) return { empty: true };
+  let day, month, year;
+  let m = s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2}|\d{4})$/);
+  if (m) { [, day, month, year] = m; }
+  else if (/^\d{8}$/.test(s)) { day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 8); }
+  else if (/^\d{6}$/.test(s)) { day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 6); }
+  else return null;
+  day = Number(day); month = Number(month); year = Number(year);
+  if (year < 100) year += 2000;
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return { day, month, year };
+}
+function formatDDMMYYYY({ day, month, year }) { return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`; }
+function toIsoDate({ day, month, year }) { return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }
+function fromIsoDate(iso) {
+  if (!iso) return '';
+  const [year, month, day] = iso.split('-').map(Number);
+  return formatDDMMYYYY({ day, month, year });
+}
+
+let me = null;
+
+async function loadReportTypes() {
+  const types = await api('/api/org/report-types');
+  const readOnly = me.role === 'time_admin';
+  const tbody = document.getElementById('rt-tbody');
+  tbody.innerHTML = types.length ? types.map(t => `
+    <tr data-code="${t.code}">
+      <td>${t.code}</td>
+      <td>${t.name}</td>
+      <td>${CATEGORY_LABELS[t.category]}</td>
+      <td>${readOnly
+        ? (fromIsoDate(t.effectiveFrom) || '-')
+        : `<input class="rt-from" placeholder="DD/MM/YYYY" inputmode="numeric" value="${fromIsoDate(t.effectiveFrom)}" style="width:110px" />`}</td>
+      <td>${readOnly
+        ? (fromIsoDate(t.effectiveUntil) || '-')
+        : `<input class="rt-until" placeholder="DD/MM/YYYY" inputmode="numeric" value="${fromIsoDate(t.effectiveUntil)}" style="width:110px" />`}</td>
+      <td>
+        ${readOnly ? '' : `
+          <button class="btn btn-primary btn-small rt-save-btn">שמירה</button>
+          ${t.whitelisted ? '<button class="btn btn-danger btn-small rt-remove-btn">הסרה</button>' : ''}
+        `}
+      </td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="6">אין סוגים בקטלוג המוצר</td></tr>';
+
+  if (readOnly) return;
+
+  tbody.querySelectorAll('.rt-save-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('tr');
+      const code = row.dataset.code;
+      const fromRaw = row.querySelector('.rt-from').value;
+      const untilRaw = row.querySelector('.rt-until').value;
+      const from = parseFreeformDate(fromRaw);
+      const until = parseFreeformDate(untilRaw);
+      if (from === null || until === null) { alert('תאריך לא תקין'); return; }
+      btn.disabled = true;
+      try {
+        await api(`/api/org/report-types/${code}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            effectiveFrom: from.empty ? null : toIsoDate(from),
+            effectiveUntil: until.empty ? null : toIsoDate(until)
+          })
+        });
+        await loadReportTypes();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.rt-remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('tr');
+      const code = row.dataset.code;
+      if (!confirm(`להסיר את הסוג ${code} מהארגון?`)) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/org/report-types/${code}`, { method: 'DELETE' });
+        await loadReportTypes();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+/* ---------- init ---------- */
+api('/api/org/me').then(async (data) => {
+  me = data;
+  renderOrgHeader({ me, active: 'report-types' });
+  await loadReportTypes();
+});
+</script>
+</body>
+</html>

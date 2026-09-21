@@ -32,15 +32,24 @@
 
   <!-- מסך כניסת עובד: מוצג כל עוד לא מחוברים, לאחר שקוד הארגון כבר נשמר -->
   <section class="screen" id="screen-employee-login">
-    <header class="topbar topbar-brand">
-      <img src="icons/icon-192.png" alt="HAAB" class="brand-logo brand-logo-small" />
-      <img class="org-logo-small hidden" id="employee-login-org-logo" alt="" />
-      <h1 id="employee-login-org-name">HAAB</h1>
+    <header class="topbar topbar-brand login-brand-main">
+      <img src="icons/icon-192.png" alt="HAAB" class="brand-logo" />
+      <div class="login-brand-title-group">
+        <h1>HAAB</h1>
+        <span class="login-brand-subtitle">Time Management</span>
+      </div>
     </header>
+    <div class="login-brand-org-row">
+      <img class="org-logo-small hidden" id="employee-login-org-logo" alt="" />
+      <span id="employee-login-org-name"></span>
+    </div>
     <div class="content">
       <form class="auth-form" id="employee-login-form">
-        <label>ת.ז. / מספר עובד</label>
-        <input id="employee-login-id" inputmode="numeric" required />
+        <div id="employee-login-id-remembered" class="hidden auth-remembered-id"></div>
+        <div id="employee-login-id-field">
+          <label>ת.ז. / מספר עובד</label>
+          <input id="employee-login-id" inputmode="numeric" required />
+        </div>
         <label>סיסמה</label>
         <div class="pw-wrap">
           <input id="employee-login-password" type="password" required />
@@ -140,6 +149,7 @@
             <tr>
               <th>תאריך</th>
               <th>יום</th>
+              <th></th>
               <th>כניסה</th>
               <th>יציאה</th>
               <th>רגילות</th>

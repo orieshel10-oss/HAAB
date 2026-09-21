@@ -215,7 +215,48 @@ async function init() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(employee_id, date)
     );
+    -- Superseded by the report_types catalog below: type is now validated at the app layer
+    -- against that org's whitelist instead of a fixed list baked into a CHECK constraint.
+    ALTER TABLE absences DROP CONSTRAINT IF EXISTS absences_type_check;
+
+    -- Product-level catalog of reportable attendance/absence types (replaces the old hardcoded
+    -- ABSENCE_TYPES list). category drives the sheet's presence/absence/off-site dot color.
+    CREATE TABLE IF NOT EXISTS report_types (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL CHECK (category IN ('presence', 'absence')),
+      created_by INTEGER REFERENCES system_admins(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- Org whitelist for report_types, same effective_from/effective_until validity-window
+    -- pattern as org_attendance_agreements.
+    CREATE TABLE IF NOT EXISTS org_report_types (
+      org_id INTEGER NOT NULL REFERENCES organizations(id),
+      type_code TEXT NOT NULL REFERENCES report_types(code),
+      effective_from TEXT,
+      effective_until TEXT,
+      PRIMARY KEY (org_id, type_code)
+    );
   `);
+
+  // Small fixed catalog (7 rows) - seeded directly here rather than via a standalone script,
+  // same precedent as the single special_days row below.
+  const REPORT_TYPES = [
+    ['vacation', 'חופשה', 'absence'],
+    ['sick', 'מחלת עובד', 'absence'],
+    ['spouse_sick', 'מחלת בן זוג', 'absence'],
+    ['child_sick', 'מחלת ילד', 'absence'],
+    ['unpaid', 'היעדרות שלא בתשלום', 'absence'],
+    ['conference', 'כנס', 'presence'],
+    ['company_event', 'אירוע חברה', 'presence']
+  ];
+  for (const [code, name, category] of REPORT_TYPES) {
+    await pool.query(
+      'INSERT INTO report_types (code, name, category) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING',
+      [code, name, category]
+    );
+  }
 
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM organizations');
   if (rows[0].c === 0) {

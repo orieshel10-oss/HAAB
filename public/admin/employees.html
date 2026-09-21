@@ -28,8 +28,14 @@
         <thead><tr><th>שם</th><th>ת.ז./דרכון</th><th>נייד</th><th>תת-ארגון</th><th>גישה לאפליקציה</th><th></th><th></th></tr></thead>
         <tbody id="emp-tbody"><tr class="empty-row"><td colspan="7">טוען...</td></tr></tbody>
       </table>
+    </section>
+  </div>
+</div>
 
-      <form class="admin-form hidden" id="emp-form">
+<div class="modal-overlay-simple hidden" id="emp-modal-overlay">
+  <div class="modal-card-simple modal-card-form">
+    <h3 id="emp-modal-title">עובד חדש</h3>
+      <form class="admin-form" id="emp-form">
         <div>
           <label>סוג מזהה</label>
           <select id="emp-id-type">
@@ -120,7 +126,6 @@
           <button type="button" class="btn btn-secondary" id="emp-cancel-btn">ביטול</button>
         </div>
       </form>
-    </section>
   </div>
 </div>
 
@@ -408,10 +413,15 @@ async function loadEmployees() {
 }
 
 const empForm = document.getElementById('emp-form');
+const empModalOverlay = document.getElementById('emp-modal-overlay');
+
+function openEmpModal() { empModalOverlay.classList.remove('hidden'); }
+function closeEmpModal() { empModalOverlay.classList.add('hidden'); }
 
 function resetEmpForm() {
   editingEmpId = null;
   empForm.reset();
+  document.getElementById('emp-modal-title').textContent = 'עובד חדש';
   document.getElementById('emp-id-label').textContent = 'מספר תעודת זהות';
   document.getElementById('emp-submit-btn').textContent = 'שמירה';
   document.getElementById('emp-password-label').textContent = 'סיסמה לכניסת עובד (לא חובה)';
@@ -421,22 +431,22 @@ function resetEmpForm() {
 wirePasswordToggle('emp-password', 'emp-password-toggle');
 
 document.getElementById('new-emp-btn').addEventListener('click', () => {
-  if (!empForm.classList.contains('hidden') && editingEmpId === null) {
-    empForm.classList.add('hidden');
-    return;
-  }
   resetEmpForm();
-  empForm.classList.remove('hidden');
+  openEmpModal();
 });
 document.getElementById('emp-cancel-btn').addEventListener('click', () => {
   resetEmpForm();
-  empForm.classList.add('hidden');
+  closeEmpModal();
+});
+empModalOverlay.addEventListener('click', (e) => {
+  if (e.target === empModalOverlay) { resetEmpForm(); closeEmpModal(); }
 });
 
 function openEditEmp(id) {
   const e = empsCache.find(x => String(x.id) === String(id));
   if (!e) return;
   editingEmpId = e.id;
+  document.getElementById('emp-modal-title').textContent = `עריכת עובד: ${[e.first_name, e.last_name].filter(Boolean).join(' ')}`;
   document.getElementById('emp-id-type').value = e.id_type;
   document.getElementById('emp-id-label').textContent = e.id_type === 'passport' ? 'מספר דרכון' : 'מספר תעודת זהות';
   document.getElementById('emp-id-number').value = e.id_number || '';
@@ -466,8 +476,7 @@ function openEditEmp(id) {
   document.getElementById('emp-password-label').textContent = 'סיסמה חדשה (השאירו ריק כדי לא לשנות)';
   document.getElementById('emp-submit-btn').textContent = 'עדכון';
   document.getElementById('emp-form-msg').textContent = '';
-  empForm.classList.remove('hidden');
-  empForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  openEmpModal();
 }
 
 const EMP_ERROR_MSGS = {
@@ -549,7 +558,7 @@ empForm.addEventListener('submit', async (e) => {
       await api('/api/org/employees', { method: 'POST', body: JSON.stringify(body) });
     }
     resetEmpForm();
-    empForm.classList.add('hidden');
+    closeEmpModal();
     loadEmployees();
   } catch (err) {
     msg.textContent = EMP_ERROR_MSGS[err.message] || err.message;

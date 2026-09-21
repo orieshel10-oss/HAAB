@@ -1,5 +1,3 @@
-const ABSENCE_TYPES = ['vacation', 'sick', 'child_sick', 'spouse_sick', 'conference'];
-
 function pad(n) {
   return String(n).padStart(2, '0');
 }
@@ -27,6 +25,45 @@ function computeMinutes(events) {
     }
   }
   return Math.round(total);
+}
+
+// Pairs sequential 'in' -> 'out' events (already sorted by ts) into {inTs, outTs} sessions.
+// An unmatched trailing 'in' (still clocked in) is dropped, same as computeMinutes.
+function pairSessions(events) {
+  const sessions = [];
+  let openIn = null;
+  for (const ev of events) {
+    if (ev.type === 'in') {
+      openIn = ev.ts;
+    } else if (ev.type === 'out' && openIn) {
+      sessions.push({ inTs: openIn, outTs: ev.ts });
+      openIn = null;
+    }
+  }
+  return sessions;
+}
+
+// Groups chronologically-sorted sessions into per-date pay-split groups. A session is always
+// attributed to the calendar date of its own check-in (so an overnight shift's hours land
+// entirely on the day it started, never split across two days or lost). Consecutive sessions
+// merge into the same group - and so share one splitDayMinutes call on their combined duration -
+// only when the next check-in is the SAME calendar date as the group's date AND the gap since
+// the group's last check-out is under 8 hours. A later calendar date always starts a new group
+// regardless of gap size, and an 8h+ gap starts a new group even on the same date.
+function groupSessionsIntoRows(sessions) {
+  const groups = [];
+  for (const s of sessions) {
+    const date = toDateKey(s.inTs);
+    const last = groups[groups.length - 1];
+    const mergeable = last && date === last.date &&
+      (new Date(s.inTs) - new Date(last.sessions[last.sessions.length - 1].outTs)) < 8 * 60 * 60 * 1000;
+    if (mergeable) {
+      last.sessions.push(s);
+    } else {
+      groups.push({ date, sessions: [s] });
+    }
+  }
+  return groups;
 }
 
 function minutesToLabel(minutes) {
@@ -74,11 +111,12 @@ function splitDayMinutes(totalMinutes, dayType) {
 }
 
 module.exports = {
-  ABSENCE_TYPES,
   pad,
   toDateKey,
   nowIso,
   computeMinutes,
+  pairSessions,
+  groupSessionsIntoRows,
   minutesToLabel,
   shiftDateStr,
   dayTypeFromDate,

@@ -5,13 +5,15 @@ const MONTH_NAMES = [
   'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'
 ];
 
-const ABSENCE_META = {
-  vacation: { label: 'חופשה', group: 'vacation' },
-  sick: { label: 'מחלה', group: 'sick' },
-  child_sick: { label: 'מחלת ילד', group: 'sick' },
-  spouse_sick: { label: 'מחלת בן זוג', group: 'sick' },
-  conference: { label: 'כנס', group: 'vacation' }
-};
+// Populated from GET /api/employee/report-types (the org's currently-whitelisted types) right
+// after login/session-restore - replaces what used to be a hardcoded 5-entry object, since the
+// actual list is now an admin-managed catalog (product level + org whitelist).
+let REPORT_TYPES_BY_CODE = {};
+async function loadReportTypes() {
+  const types = await api('/api/employee/report-types');
+  REPORT_TYPES_BY_CODE = {};
+  types.forEach((t) => { REPORT_TYPES_BY_CODE[t.code] = t; });
+}
 
 function pad(n) { return String(n).padStart(2, '0'); }
 function dateStr(y, m, d) { return `${y}-${pad(m)}-${pad(d)}`; }
@@ -116,7 +118,7 @@ setInterval(tickClock, 1000);
 function createCalendarController({ containerId, titleId, onRender, onDayClick }) {
   const container = document.getElementById(containerId);
   const titleEl = document.getElementById(titleId);
-  const state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
+  const state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1, selectedDate: todayStr() };
 
   function setMonth(delta) {
     state.month += delta;
@@ -135,7 +137,6 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
     const { year, month } = state;
     const firstWeekday = new Date(year, month - 1, 1).getDay();
     const daysInMonth = new Date(year, month, 0).getDate();
-    const today = todayStr();
 
     let html = '<div class="cal-weekdays">' + WEEKDAYS.map(w => `<div>${w}</div>`).join('') + '</div>';
     html += '<div class="cal-days">';
@@ -144,7 +145,9 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
       const ds = dateStr(year, month, d);
       const info = (cellData && cellData[ds]) || {};
       const classes = ['cal-day'];
-      if (ds === today) classes.push('today');
+      // "today" doubles as the visual "selected day" highlight here - the square moves to
+      // whichever day was last tapped rather than always marking the literal current date.
+      if (ds === state.selectedDate) classes.push('today');
       if (info.hoursLabel) classes.push('has-hours');
       html += `<button class="${classes.join(' ')}" data-date="${ds}">
         <span class="day-dot ${info.dotGroup || ''}"></span>
@@ -155,7 +158,11 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
     html += '</div>';
     container.innerHTML = html;
     container.querySelectorAll('.cal-day:not(.empty)').forEach(el => {
-      el.addEventListener('click', () => onDayClick(el.dataset.date));
+      el.addEventListener('click', () => {
+        state.selectedDate = el.dataset.date;
+        render(cellData);
+        onDayClick(el.dataset.date);
+      });
     });
   }
 
@@ -170,10 +177,11 @@ const updateCal = createCalendarController({
     const sheet = await api(`/api/attendance/sheet?year=${year}&month=${month}`);
     const cellData = {};
     sheet.days.forEach(day => {
-      const totalMinutes = day.minutes.regular + day.minutes.ot125 + day.minutes.ot150 + day.minutes.shabbat;
+      const totalMinutes = day.rows.reduce((sum, r) => sum + r.minutes.regular + r.minutes.ot125 + r.minutes.ot150 + r.minutes.shabbat, 0);
+      const category = day.absence ? (REPORT_TYPES_BY_CODE[day.absence.type] || {}).category : null;
       cellData[day.date] = {
         hoursLabel: totalMinutes ? minutesToLabel(totalMinutes) : '',
-        dotGroup: day.absence ? (ABSENCE_META[day.absence.type] || {}).group || 'vacation' : null
+        dotGroup: category === 'absence' ? 'sick' : (category === 'presence' ? 'vacation' : null)
       };
     });
     return cellData;
@@ -206,11 +214,7 @@ async function openUpdateModal(date) {
 
   const typeOptions = [
     { value: 'attendance', label: 'נוכחות' },
-    { value: 'vacation', label: ABSENCE_META.vacation.label },
-    { value: 'sick', label: ABSENCE_META.sick.label },
-    { value: 'child_sick', label: ABSENCE_META.child_sick.label },
-    { value: 'spouse_sick', label: ABSENCE_META.spouse_sick.label },
-    { value: 'conference', label: ABSENCE_META.conference.label }
+    ...Object.values(REPORT_TYPES_BY_CODE).map(t => ({ value: t.code, label: t.name }))
   ].map(o => `<option value="${o.value}" ${o.value === initialType ? 'selected' : ''}>${o.label}</option>`).join('');
 
   openModal(`
@@ -309,41 +313,59 @@ function createSheetController() {
     return minutes ? minutesToLabel(minutes) : '';
   }
 
+  // green = real clock punches with no report overriding the day; blue = a presence-category
+  // report (off-site, e.g. conference/company event); red = an absence-category report.
+  function dotClassForDay(day) {
+    if (day.absence) {
+      const category = (REPORT_TYPES_BY_CODE[day.absence.type] || {}).category;
+      return category === 'presence' ? 'presence-dot-blue' : 'presence-dot-red';
+    }
+    if (day.rows.some(r => r.firstIn)) return 'presence-dot-green';
+    return '';
+  }
+
   function render(data) {
     const today = todayStr();
     tbody.innerHTML = data.days.map(day => {
       const rowClasses = [];
       if (day.date === today) rowClasses.push('today');
       if (day.dayType === 'rest') rowClasses.push('rest-day');
-      let note = '';
+
+      const badges = [];
+      if (day.isHoliday) badges.push('חג');
+      if (day.isHolidayEve) badges.push('ערב חג');
       let noteClass = '';
       if (day.absence) {
-        const meta = ABSENCE_META[day.absence.type] || { label: day.absence.type, group: 'vacation' };
-        note = meta.label;
-        noteClass = meta.group === 'sick' ? 'note-sick' : 'note-vacation';
+        const meta = REPORT_TYPES_BY_CODE[day.absence.type];
+        badges.push(meta ? meta.name : day.absence.type);
+        noteClass = meta && meta.category === 'presence' ? 'note-vacation' : 'note-sick';
       } else if (day.dayType === 'rest') {
-        note = 'שבת';
+        badges.push('שבת');
       }
-      return `
+      const note = badges.join(', ');
+      const dotClass = dotClassForDay(day);
+
+      return day.rows.map((row, i) => `
         <tr class="${rowClasses.join(' ')}">
-          <td>${Number(day.date.slice(8, 10))}</td>
-          <td>${WEEKDAYS[day.weekday]}</td>
-          <td>${day.firstIn ? fmtTime(day.firstIn) : ''}</td>
-          <td>${day.lastOut ? fmtTime(day.lastOut) : ''}</td>
-          <td>${hoursCell(day.minutes.regular)}</td>
-          <td>${hoursCell(day.minutes.ot125)}</td>
-          <td>${hoursCell(day.minutes.ot150)}</td>
-          <td>${hoursCell(day.minutes.shabbat)}</td>
-          <td class="${noteClass}">${note}</td>
-        </tr>`;
+          ${i === 0 ? `<td rowspan="${day.rows.length}">${Number(day.date.slice(8, 10))}</td>` : ''}
+          ${i === 0 ? `<td rowspan="${day.rows.length}">${WEEKDAYS[day.weekday]}</td>` : ''}
+          <td><span class="presence-dot ${dotClass}"></span></td>
+          <td>${row.firstIn ? fmtTime(row.firstIn) : ''}</td>
+          <td>${row.lastOut ? fmtTime(row.lastOut) : ''}</td>
+          <td>${hoursCell(row.minutes.regular)}</td>
+          <td>${hoursCell(row.minutes.ot125)}</td>
+          <td>${hoursCell(row.minutes.ot150)}</td>
+          <td>${hoursCell(row.minutes.shabbat)}</td>
+          ${i === 0 ? `<td class="${noteClass}" rowspan="${day.rows.length}">${note}</td>` : ''}
+        </tr>`).join('');
     }).join('');
 
     const absenceSummary = Object.entries(data.totals.absenceCounts)
-      .map(([type, count]) => `${count} ${(ABSENCE_META[type] || { label: type }).label}`)
+      .map(([type, count]) => `${count} ${(REPORT_TYPES_BY_CODE[type] || { name: type }).name}`)
       .join(', ');
     tfoot.innerHTML = `
       <tr>
-        <td colspan="4">סה"כ${absenceSummary ? ` (${absenceSummary})` : ''}</td>
+        <td colspan="5">סה"כ${absenceSummary ? ` (${absenceSummary})` : ''}</td>
         <td>${hoursCell(data.totals.regular)}</td>
         <td>${hoursCell(data.totals.ot125)}</td>
         <td>${hoursCell(data.totals.ot150)}</td>
@@ -366,6 +388,7 @@ function minutesToLabel(minutes) {
 
 /* ---------- auth: org selection + employee login ---------- */
 const ORG_CODE_STORAGE_KEY = 'haab_org_code';
+const EMPLOYEE_ID_STORAGE_KEY = 'haab_employee_id';
 
 function showOrgLoginBranding(org) {
   document.getElementById('employee-login-org-name').textContent = org.name;
@@ -375,6 +398,26 @@ function showOrgLoginBranding(org) {
     logoImg.classList.remove('hidden');
   } else {
     logoImg.classList.add('hidden');
+  }
+}
+
+// After a first successful login the id-number is remembered too, so returning visits only ask
+// for the password - the id input stays in the DOM (hidden, pre-filled) so the submit handler
+// doesn't need two code paths.
+function syncRememberedIdUi() {
+  const savedId = localStorage.getItem(EMPLOYEE_ID_STORAGE_KEY);
+  const remembered = document.getElementById('employee-login-id-remembered');
+  const field = document.getElementById('employee-login-id-field');
+  const input = document.getElementById('employee-login-id');
+  if (savedId) {
+    input.value = savedId;
+    remembered.textContent = `מחוברים כ: ${savedId}`;
+    remembered.classList.remove('hidden');
+    field.classList.add('hidden');
+  } else {
+    input.value = '';
+    remembered.classList.add('hidden');
+    field.classList.remove('hidden');
   }
 }
 
@@ -391,11 +434,13 @@ async function showAuthGate() {
     const res = await fetch(`/api/employee/organizations/${savedCode}`);
     if (!res.ok) throw new Error('org lookup failed');
     showOrgLoginBranding(await res.json());
+    syncRememberedIdUi();
     showScreen('employee-login');
   } catch (e) {
     // The remembered org code no longer resolves (e.g. deleted) - fall back to org-select
     // rather than getting stuck showing a login form with no branding.
     localStorage.removeItem(ORG_CODE_STORAGE_KEY);
+    localStorage.removeItem(EMPLOYEE_ID_STORAGE_KEY);
     showScreen('org-select');
   }
 }
@@ -412,6 +457,7 @@ orgSelectForm.addEventListener('submit', async (e) => {
     const org = await res.json();
     localStorage.setItem(ORG_CODE_STORAGE_KEY, code);
     showOrgLoginBranding(org);
+    syncRememberedIdUi();
     showScreen('employee-login');
   } catch (e2) {
     msg.textContent = 'שגיאת תקשורת - נסו שוב';
@@ -433,7 +479,9 @@ employeeLoginForm.addEventListener('submit', async (e) => {
       body: JSON.stringify({ orgCode, idNumber, password })
     });
     if (!res.ok) { msg.textContent = 'פרטי התחברות שגויים'; return; }
+    localStorage.setItem(EMPLOYEE_ID_STORAGE_KEY, idNumber);
     employeeLoginForm.reset();
+    await loadReportTypes();
     showScreen('home');
     refreshStatus();
   } catch (e2) {
@@ -451,6 +499,7 @@ document.getElementById('employee-login-password-toggle').addEventListener('clic
 
 document.getElementById('change-org-btn').addEventListener('click', () => {
   localStorage.removeItem(ORG_CODE_STORAGE_KEY);
+  localStorage.removeItem(EMPLOYEE_ID_STORAGE_KEY);
   document.getElementById('org-select-code').value = '';
   document.getElementById('org-select-msg').textContent = '';
   showScreen('org-select');
@@ -466,6 +515,7 @@ document.getElementById('employee-logout-btn').addEventListener('click', async (
   try {
     const res = await fetch('/api/employee/me');
     if (res.ok) {
+      await loadReportTypes();
       showScreen('home');
       refreshStatus();
     } else {

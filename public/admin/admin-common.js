@@ -26,6 +26,7 @@ const ORG_NAV_ITEMS = [
   { key: 'home', href: 'organization.html', label: 'בית' },
   { key: 'employees', href: 'employees.html', label: 'עובדים' },
   { key: 'agreements', href: 'org-agreements.html', label: 'הסכמים בארגון' },
+  { key: 'report-types', href: 'org-report-types.html', label: 'סוגי נוכחות' },
   { key: 'admins', href: 'org-admins.html', label: 'מנהלים' }
 ];
 

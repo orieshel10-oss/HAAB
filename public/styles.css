@@ -313,12 +313,31 @@ html, body {
 .sheet-table tbody tr.rest-day td { color: var(--text-muted); }
 .sheet-table td.note-vacation { color: var(--brand-dark); font-weight: 700; }
 .sheet-table td.note-sick { color: var(--red-dark); font-weight: 700; }
+.presence-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: transparent; }
+.presence-dot.presence-dot-green { background: var(--green); }
+.presence-dot.presence-dot-blue { background: var(--brand); }
+.presence-dot.presence-dot-red { background: var(--red); }
 .sheet-table tfoot td { font-weight: 800; border-top: 2px solid var(--border); }
 .sheet-note { font-size: 11px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
 
 /* org-select / employee-login screens */
-.brand-logo-small { width: 22px; height: 22px; }
-.org-logo-small { width: 26px; height: 26px; border-radius: 7px; background: #fff; padding: 2px; object-fit: cover; }
+.login-brand-main { flex-direction: column; gap: 2px; padding-bottom: 12px; }
+.login-brand-title-group { display: flex; align-items: baseline; gap: 8px; }
+.login-brand-title-group h1 { font-size: 19px; }
+.login-brand-subtitle { font-size: 12px; opacity: 0.85; letter-spacing: 0.5px; }
+.login-brand-org-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.org-logo-small { width: 20px; height: 20px; border-radius: 6px; background: #fff; padding: 1px; object-fit: cover; }
+.auth-remembered-id { font-size: 13px; color: var(--text-muted); margin-bottom: 2px; }
 .auth-intro { font-size: 15px; color: var(--text-muted); text-align: center; margin: 20px 0 18px; }
 .auth-form { display: flex; flex-direction: column; gap: 10px; }
 .auth-form label { font-size: 13px; color: var(--text-muted); }

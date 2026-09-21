@@ -63,6 +63,22 @@ router.post('/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
+// The org's currently-valid (whitelisted + within its date window) report types, for the
+// update-attendance dropdown and the sheet's presence/absence/off-site dot color.
+router.get('/report-types', requireEmployee, asyncHandler(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT rt.code, rt.name, rt.category
+     FROM report_types rt
+     JOIN org_report_types ort ON ort.type_code = rt.code
+     WHERE ort.org_id = $1
+       AND (ort.effective_from IS NULL OR ort.effective_from <= to_char(now(), 'YYYY-MM-DD'))
+       AND (ort.effective_until IS NULL OR ort.effective_until >= to_char(now(), 'YYYY-MM-DD'))
+     ORDER BY rt.name`,
+    [req.session.employeeOrgId]
+  );
+  res.json(rows);
+}));
+
 router.get('/me', requireEmployee, asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT e.first_name, e.last_name, o.name AS org_name

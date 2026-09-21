@@ -10,11 +10,12 @@ const orgPortalRouter = require('./routes/orgPortal');
 const employeePortalRouter = require('./routes/employeePortal');
 const { requireEmployee } = require('./auth');
 const {
-  ABSENCE_TYPES,
   pad,
   toDateKey,
   nowIso,
   computeMinutes,
+  pairSessions,
+  groupSessionsIntoRows,
   minutesToLabel,
   shiftDateStr,
   dayTypeFromDate,
@@ -104,8 +105,18 @@ app.get('/api/absences', asyncHandler(async (req, res) => {
 
 app.post('/api/absences', asyncHandler(async (req, res) => {
   const { date, type, note } = req.body || {};
-  if (!date || !ABSENCE_TYPES.includes(type)) {
-    return res.status(400).json({ error: `date and type (one of ${ABSENCE_TYPES.join(', ')}) are required` });
+  if (!date || !type) {
+    return res.status(400).json({ error: 'date and type are required' });
+  }
+  const whitelisted = await pool.query(
+    `SELECT 1 FROM org_report_types
+     WHERE org_id = $1 AND type_code = $2
+       AND (effective_from IS NULL OR effective_from <= to_char(now(), 'YYYY-MM-DD'))
+       AND (effective_until IS NULL OR effective_until >= to_char(now(), 'YYYY-MM-DD'))`,
+    [req.session.employeeOrgId, type]
+  );
+  if (!whitelisted.rows[0]) {
+    return res.status(400).json({ error: 'type is not enabled for this organization' });
   }
   await pool.query(
     `INSERT INTO absences (client_id, employee_id, date, type, note)
@@ -158,12 +169,29 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
   const month = Number(req.query.month);
   const { start, end } = monthRange(year, month);
 
+  // Sessions are attributed to their check-in's own calendar date (so an overnight shift's
+  // hours land entirely on the day it started), then grouped for pay-split purposes per the
+  // merge rule in groupSessionsIntoRows - unrelated to the padded fetch window, which exists
+  // purely so a session crossing the month boundary is still visible to the pairing step.
   const rawEvents = await fetchEventsPadded(req.session.employeeId, start, end);
-  const byDay = {};
-  for (const ev of rawEvents) {
-    const key = toDateKey(ev.ts);
-    if (key < start || key > end) continue;
-    (byDay[key] = byDay[key] || []).push(ev);
+  const allSessions = pairSessions(rawEvents).filter((s) => {
+    const key = toDateKey(s.inTs);
+    return key >= start && key <= end;
+  });
+  const groups = groupSessionsIntoRows(allSessions);
+
+  const rowsByDate = {};
+  for (const group of groups) {
+    const dayType = dayTypeFromDate(...group.date.split('-').map(Number));
+    const totalMinutes = group.sessions.reduce((sum, s) => sum + (new Date(s.outTs) - new Date(s.inTs)) / 60000, 0);
+    const split = splitDayMinutes(Math.round(totalMinutes), dayType);
+    const rows = group.sessions.map((s, i) => ({
+      firstIn: s.inTs,
+      lastOut: s.outTs,
+      minutes: i === group.sessions.length - 1 ? split : { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+      showTotals: i === group.sessions.length - 1
+    }));
+    (rowsByDate[group.date] = rowsByDate[group.date] || []).push(...rows);
   }
 
   const { rows: absenceRows } = await pool.query(
@@ -173,39 +201,64 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
   const absenceMap = {};
   absenceRows.forEach((a) => { absenceMap[a.date] = a; });
 
+  // Holiday/eve indicators follow the employee's own agreement's linked holiday calendar (no
+  // agreement, or holiday_calendar='none', means neither is ever shown). Eve-of-holiday is only
+  // meaningful for the Jewish calendar per the org's own convention.
+  const { rows: agreementRows } = await pool.query(
+    `SELECT aa.holiday_calendar FROM employees e
+     JOIN attendance_agreements aa ON aa.code = e.agreement_code
+     WHERE e.id = $1`,
+    [req.session.employeeId]
+  );
+  const holidayCalendar = agreementRows[0] ? agreementRows[0].holiday_calendar : null;
+  let holidaySet = new Set();
+  if (holidayCalendar && holidayCalendar !== 'none') {
+    const { rows: holidayRows } = await pool.query(
+      'SELECT date FROM holidays WHERE calendar_type = $1 AND date BETWEEN $2 AND $3',
+      [holidayCalendar, start, shiftDateStr(end, 1)]
+    );
+    holidaySet = new Set(holidayRows.map((h) => h.date));
+  }
+
   const daysInMonth = new Date(year, month, 0).getDate();
   const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, absenceCounts: {} };
   const days = [];
 
   for (let d = 1; d <= daysInMonth; d++) {
     const ds = `${year}-${pad(month)}-${pad(d)}`;
-    const dayEvents = byDay[ds] || [];
-    const minutes = computeMinutes(dayEvents);
     const dayType = dayTypeFromDate(year, month, d);
     const absence = absenceMap[ds] || null;
-    // An absence with no clock events has no start/end time to go on - per policy, that
-    // means a full day off, credited as a full standard day rather than showing zero hours.
-    const split = (absence && minutes === 0)
-      ? { regular: standardDayMinutes(dayType), ot125: 0, ot150: 0, shabbat: 0 }
-      : splitDayMinutes(minutes, dayType);
-    const firstIn = dayEvents.find((e) => e.type === 'in') || null;
-    const outs = dayEvents.filter((e) => e.type === 'out');
-    const lastOut = outs.length ? outs[outs.length - 1] : null;
+    let rows = rowsByDate[ds];
+    if (!rows || !rows.length) {
+      // No clock sessions that day: an absence with nothing to go on is credited a full
+      // standard day (unchanged policy); otherwise a single blank placeholder row keeps the
+      // sheet showing every day of the month, not just worked ones.
+      rows = [{
+        firstIn: null,
+        lastOut: null,
+        minutes: absence
+          ? { regular: standardDayMinutes(dayType), ot125: 0, ot150: 0, shabbat: 0 }
+          : { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+        showTotals: true
+      }];
+    }
 
     if (absence) totals.absenceCounts[absence.type] = (totals.absenceCounts[absence.type] || 0) + 1;
-    totals.regular += split.regular;
-    totals.ot125 += split.ot125;
-    totals.ot150 += split.ot150;
-    totals.shabbat += split.shabbat;
+    rows.forEach((r) => {
+      totals.regular += r.minutes.regular;
+      totals.ot125 += r.minutes.ot125;
+      totals.ot150 += r.minutes.ot150;
+      totals.shabbat += r.minutes.shabbat;
+    });
 
     days.push({
       date: ds,
       weekday: new Date(year, month - 1, d).getDay(),
       dayType,
-      firstIn: firstIn ? firstIn.ts : null,
-      lastOut: lastOut ? lastOut.ts : null,
-      minutes: split,
-      absence
+      isHoliday: holidaySet.has(ds),
+      isHolidayEve: holidayCalendar === 'jewish' && holidaySet.has(shiftDateStr(ds, 1)),
+      absence,
+      rows
     });
   }
 

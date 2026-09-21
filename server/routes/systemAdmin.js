@@ -442,6 +442,67 @@ router.delete('/agreements/:code', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------- report types (product-level catalog) ---------- */
+
+const REPORT_TYPE_CATEGORIES = ['presence', 'absence'];
+const REPORT_TYPE_CODE_RE = /^[a-z][a-z0-9_]{1,29}$/;
+
+router.get('/report-types', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM report_types ORDER BY name');
+  res.json(rows);
+}));
+
+function validateReportTypeBody(body) {
+  const { code, name, category } = body || {};
+  if (!REPORT_TYPE_CODE_RE.test(code || '')) {
+    return { status: 400, error: 'code must be lowercase letters/digits/underscores, 2-30 characters, starting with a letter' };
+  }
+  if (!name || name.length > 30) return { status: 400, error: 'name is required and must be at most 30 characters' };
+  if (!REPORT_TYPE_CATEGORIES.includes(category)) {
+    return { status: 400, error: `category must be one of ${REPORT_TYPE_CATEGORIES.join(', ')}` };
+  }
+  return { data: { code, name, category } };
+}
+
+router.post('/report-types', asyncHandler(async (req, res) => {
+  const validation = validateReportTypeBody(req.body);
+  if (validation.error) return res.status(validation.status).json({ error: validation.error });
+  const d = validation.data;
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO report_types (code, name, category, created_by) VALUES ($1,$2,$3,$4) RETURNING *',
+      [d.code, d.name, d.category, req.session.systemAdminId]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'report type code already exists' });
+    throw err;
+  }
+}));
+
+router.put('/report-types/:code', asyncHandler(async (req, res) => {
+  const validation = validateReportTypeBody({ ...req.body, code: req.params.code });
+  if (validation.error) return res.status(validation.status).json({ error: validation.error });
+  const d = validation.data;
+  const { rows } = await pool.query(
+    'UPDATE report_types SET name=$1, category=$2 WHERE code = $3 RETURNING *',
+    [d.name, d.category, req.params.code]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
+}));
+
+router.delete('/report-types/:code', asyncHandler(async (req, res) => {
+  const { rows: uses } = await pool.query('SELECT id FROM absences WHERE type = $1 LIMIT 1', [req.params.code]);
+  if (uses.length > 0) {
+    return res.status(409).json({ error: 'in_use' });
+  }
+  await pool.query('DELETE FROM org_report_types WHERE type_code = $1', [req.params.code]);
+  const del = await pool.query('DELETE FROM report_types WHERE code = $1', [req.params.code]);
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
 /* ---------- holidays ---------- */
 
 const CALENDAR_TYPES = ['jewish', 'christian', 'muslim'];
