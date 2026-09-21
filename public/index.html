@@ -121,9 +121,46 @@
         <button class="cal-nav-btn" data-cal-next="update">‹</button>
       </div>
       <div class="calendar" id="update-calendar"></div>
-      <div class="legend">
-        <span class="legend-item"><i class="dot vacation"></i> חופשה / כנס</span>
-        <span class="legend-item"><i class="dot sick"></i> מחלה / היעדרות משפחתית</span>
+
+      <div class="day-panel">
+        <div class="day-panel-header">
+          <div class="day-panel-weekday" id="day-panel-weekday"></div>
+          <div class="day-panel-date" id="day-panel-date"></div>
+        </div>
+        <div class="day-panel-clock-line">
+          <span>דיווחי שעון</span>
+          <span id="day-panel-clock-events">אין</span>
+        </div>
+        <div class="day-panel-reports-head">
+          <span>דיווחי נוכחות</span>
+          <span class="day-panel-total" id="day-panel-total"></span>
+          <button type="button" class="day-panel-add-btn" id="day-panel-add-btn">+</button>
+        </div>
+        <div class="day-panel-reports-list" id="day-panel-reports-list"></div>
+
+        <form class="day-panel-editor hidden" id="day-panel-editor">
+          <select class="report-select" id="editor-type"></select>
+          <label class="whole-day-toggle hidden" id="editor-wholeday-wrap">
+            <input type="checkbox" id="editor-wholeday" />
+            <span>יום שלם</span>
+          </label>
+          <div class="time-row" id="editor-time-row">
+            <div class="time-field">
+              <label>שעת כניסה</label>
+              <input type="time" id="editor-entry" />
+            </div>
+            <div class="time-field">
+              <label>שעת יציאה</label>
+              <input type="time" id="editor-exit" />
+            </div>
+          </div>
+          <button type="button" class="link-btn-small" id="editor-note-toggle">+ הוספת הערה</button>
+          <textarea id="editor-note" class="hidden" placeholder="הערה"></textarea>
+          <div class="modal-actions">
+            <button type="button" class="modal-secondary" id="editor-cancel">ביטול</button>
+            <button type="submit" class="modal-primary" id="editor-save">שמירה</button>
+          </div>
+        </form>
       </div>
     </div>
   </section>
@@ -164,10 +201,6 @@
     </div>
   </section>
 
-</div>
-
-<div class="modal-overlay hidden" id="modal-overlay">
-  <div class="modal" id="modal"></div>
 </div>
 
 <script src="app.js"></script>

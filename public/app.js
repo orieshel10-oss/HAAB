@@ -36,7 +36,7 @@ async function api(path, options) {
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(`screen-${name}`).classList.add('active');
-  if (name === 'update') updateCal.refresh();
+  if (name === 'update') { updateCal.refresh(); loadDayPanel(updateCal.getSelectedDate()); }
   if (name === 'sheet') sheetView.refresh();
 }
 
@@ -45,21 +45,6 @@ document.querySelectorAll('[data-nav]').forEach(btn => {
 });
 document.querySelectorAll('[data-back]').forEach(btn => {
   btn.addEventListener('click', () => showScreen('home'));
-});
-
-/* ---------- modal ---------- */
-const modalOverlay = document.getElementById('modal-overlay');
-const modalEl = document.getElementById('modal');
-function openModal(html) {
-  modalEl.innerHTML = html;
-  modalOverlay.classList.remove('hidden');
-}
-function closeModal() {
-  modalOverlay.classList.add('hidden');
-  modalEl.innerHTML = '';
-}
-modalOverlay.addEventListener('click', (e) => {
-  if (e.target === modalOverlay) closeModal();
 });
 
 /* ---------- home screen: status + clock in/out ---------- */
@@ -149,7 +134,7 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
       // whichever day was last tapped rather than always marking the literal current date.
       if (ds === state.selectedDate) classes.push('today');
       if (info.hoursLabel) classes.push('has-hours');
-      if (info.holidayLabel) classes.push('holiday');
+      if (info.isDayOff) classes.push('day-off');
       html += `<button class="${classes.join(' ')}" data-date="${ds}">
         <span class="day-dot ${info.dotGroup || ''}"></span>
         <span class="day-num">${d}</span>
@@ -168,50 +153,38 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
     });
   }
 
-  return { refresh, setMonth };
+  return { refresh, setMonth, getSelectedDate: () => state.selectedDate };
 }
 
-/* ---------- update-attendance screen (type/absence report + editing, one form per day) ---------- */
+/* ---------- update-attendance screen (inline day panel: list of reports + one editor) ---------- */
+let cachedSheetByDate = {};
 const updateCal = createCalendarController({
   containerId: 'update-calendar',
   titleId: 'update-cal-title',
   onRender: async (year, month) => {
     const sheet = await api(`/api/attendance/sheet?year=${year}&month=${month}`);
+    cachedSheetByDate = {};
     const cellData = {};
     sheet.days.forEach(day => {
+      cachedSheetByDate[day.date] = day;
       const totalMinutes = day.rows.reduce((sum, r) => sum + r.minutes.regular + r.minutes.ot125 + r.minutes.ot150 + r.minutes.shabbat, 0);
-      const category = day.absence ? (REPORT_TYPES_BY_CODE[day.absence.type] || {}).category : null;
+      const reportTypes = day.rows.map(r => r.type).filter(t => t && t !== 'attendance');
+      let dotGroup = null;
+      if (reportTypes.some(t => (REPORT_TYPES_BY_CODE[t] || {}).category === 'absence')) dotGroup = 'sick';
+      else if (reportTypes.length) dotGroup = 'vacation';
       cellData[day.date] = {
         hoursLabel: totalMinutes ? minutesToLabel(totalMinutes) : '',
         holidayLabel: day.isHoliday ? 'חג' : (day.isHolidayEve ? 'ערב חג' : ''),
-        dotGroup: category === 'absence' ? 'sick' : (category === 'presence' ? 'vacation' : null)
+        isDayOff: day.isDayOff,
+        dotGroup
       };
     });
     return cellData;
   },
-  onDayClick: openUpdateModal
+  onDayClick: loadDayPanel
 });
 document.querySelector('[data-cal-prev="update"]').addEventListener('click', () => updateCal.setMonth(-1));
 document.querySelector('[data-cal-next="update"]').addEventListener('click', () => updateCal.setMonth(1));
-
-// Groups a day's raw events into entry/exit session pairs for editing. Unlike the server's
-// pairSessions (used for the analyzed sheet), a trailing unmatched 'in' is kept as an
-// open/incomplete session (exit: null) instead of dropped - so "already clocked in, just add
-// an exit" shows up as a prefilled row with an empty exit field, not silently disappears.
-function pairEventsIntoSessions(events) {
-  const sessions = [];
-  let openIn = null;
-  for (const ev of events) {
-    if (ev.type === 'in') {
-      openIn = ev.ts;
-    } else if (ev.type === 'out' && openIn) {
-      sessions.push({ inTs: openIn, outTs: ev.ts });
-      openIn = null;
-    }
-  }
-  if (openIn) sessions.push({ inTs: openIn, outTs: null });
-  return sessions;
-}
 
 function shiftIsoDate(iso, deltaDays) {
   const [y, m, d] = iso.split('-').map(Number);
@@ -220,114 +193,170 @@ function shiftIsoDate(iso, deltaDays) {
   return dateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
 }
 
-function sessionRowHtml(entry, exit) {
-  return `
-    <div class="report-session-row">
-      <div class="time-field">
-        <label>שעת כניסה</label>
-        <input type="time" class="report-session-entry" value="${entry || ''}" />
-      </div>
-      <div class="time-field">
-        <label>שעת יציאה (לא חובה)</label>
-        <input type="time" class="report-session-exit" value="${exit || ''}" />
-      </div>
-      <button type="button" class="report-session-remove" title="הסרת שורה">✕</button>
-    </div>`;
+// Saturday-only standard-day length, mirroring server/attendance.js's dayTypeFromDate +
+// standardDayMinutes exactly (the actual pay-category split stays this simple for now - see the
+// sheet's own note) - used only for the day panel's quick total, not for law-based OT splitting.
+function standardMinutesForDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dow = new Date(y, m - 1, d).getDay();
+  if (dow === 6) return 0;
+  return dow === 5 ? 420 : 480;
 }
 
-function wireSessionRow(rowEl) {
-  rowEl.querySelector('.report-session-remove').addEventListener('click', () => rowEl.remove());
+function reportTypeLabel(type) {
+  if (type === 'attendance') return 'נוכחות';
+  return (REPORT_TYPES_BY_CODE[type] || {}).name || type;
 }
 
-async function openUpdateModal(date) {
+/* ---------- update-attendance day panel: list of independent reports + one editor ---------- */
+let panelDate = null;
+let panelReports = [];
+let editingReportId = null;
+
+async function loadDayPanel(date) {
+  panelDate = date;
+  editingReportId = null;
   const day = await api(`/api/attendance/day?date=${date}`);
+  panelReports = day.reports;
 
-  // No defaults: an empty day starts with a blank type and one blank session row - the user
-  // reports every value themselves. A day with existing data prefills exactly what's there.
-  const initialType = day.absence ? day.absence.type : (day.events.length ? 'attendance' : '');
-  const sessions = pairEventsIntoSessions(day.events);
-  const initialNote = day.absence && day.absence.note ? day.absence.note : '';
+  const [y, m, d] = date.split('-').map(Number);
+  const weekday = new Date(y, m - 1, d).getDay();
+  document.getElementById('day-panel-weekday').textContent = WEEKDAYS_LONG[weekday];
+  document.getElementById('day-panel-date').textContent = `${pad(d)}.${pad(m)}.${y}`;
 
-  const typeOptions = [
-    { value: '', label: '- בחרו סוג -' },
+  const clockSessions = [];
+  let openIn = null;
+  day.events.forEach(ev => {
+    if (ev.type === 'in') { openIn = ev.ts; }
+    else if (ev.type === 'out' && openIn) { clockSessions.push(`${fmtTime(openIn)}-${fmtTime(ev.ts)}`); openIn = null; }
+  });
+  if (openIn) clockSessions.push(`${fmtTime(openIn)}-`);
+  document.getElementById('day-panel-clock-events').textContent = clockSessions.length ? clockSessions.join(', ') : 'אין';
+
+  // Only the independent reports count toward the total shown here - real clock punches (shown
+  // read-only above) aren't reflected in this quick sum, matching how the two are kept separate
+  // throughout this screen.
+  let totalMinutes = 0;
+  panelReports.forEach(r => {
+    if (!r.entryTs) totalMinutes += standardMinutesForDate(date);
+    else if (r.exitTs) totalMinutes += Math.round((new Date(r.exitTs) - new Date(r.entryTs)) / 60000);
+  });
+  document.getElementById('day-panel-total').textContent = totalMinutes ? `סה"כ ${minutesToLabel(totalMinutes)} שעות` : '';
+
+  renderReportsList();
+  closeEditor();
+}
+
+function renderReportsList() {
+  const list = document.getElementById('day-panel-reports-list');
+  if (!panelReports.length) {
+    list.innerHTML = '<div class="day-panel-empty">לא דווחה נוכחות</div>';
+    return;
+  }
+  list.innerHTML = panelReports.map(r => {
+    const timeLabel = !r.entryTs ? 'יום שלם' : (r.exitTs ? `${fmtTime(r.entryTs)} - ${fmtTime(r.exitTs)}` : `${fmtTime(r.entryTs)} -`);
+    return `
+      <div class="day-panel-report-row" data-id="${r.id}">
+        <button type="button" class="day-panel-report-delete" data-id="${r.id}" title="מחיקה">🗑</button>
+        <span class="day-panel-report-type">${reportTypeLabel(r.type)}</span>
+        <span class="day-panel-report-time">${timeLabel}</span>
+      </div>`;
+  }).join('');
+
+  list.querySelectorAll('.day-panel-report-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('למחוק את הדיווח?')) return;
+      await api(`/api/attendance/reports/${btn.dataset.id}`, { method: 'DELETE' });
+      await loadDayPanel(panelDate);
+      updateCal.refresh();
+    });
+  });
+  list.querySelectorAll('.day-panel-report-row').forEach(row => {
+    row.addEventListener('click', () => openEditor(panelReports.find(r => String(r.id) === row.dataset.id)));
+  });
+}
+
+function buildTypeOptions(selected) {
+  return [
     { value: 'attendance', label: 'נוכחות' },
     ...Object.values(REPORT_TYPES_BY_CODE).map(t => ({ value: t.code, label: t.name }))
-  ].map(o => `<option value="${o.value}" ${o.value === initialType ? 'selected' : ''}>${o.label}</option>`).join('');
-
-  const sessionsHtml = (sessions.length ? sessions : [{ inTs: null, outTs: null }])
-    .map(s => sessionRowHtml(s.inTs ? fmtTime(s.inTs) : '', s.outTs ? fmtTime(s.outTs) : ''))
-    .join('');
-
-  openModal(`
-    <h2>${date}</h2>
-    <select class="report-select" id="report-type">${typeOptions}</select>
-    <div id="report-sessions">${sessionsHtml}</div>
-    <button type="button" class="modal-secondary" id="report-add-session">+ הוספת דיווח נוסף</button>
-    <textarea id="report-note" placeholder="הערה (לא חובה)">${initialNote}</textarea>
-    <div class="modal-actions">
-      <button class="modal-secondary" id="report-cancel">ביטול</button>
-      <button class="modal-primary" id="report-save">שמירה</button>
-    </div>
-  `);
-
-  const sessionsContainer = document.getElementById('report-sessions');
-  sessionsContainer.querySelectorAll('.report-session-row').forEach(wireSessionRow);
-
-  document.getElementById('report-add-session').addEventListener('click', () => {
-    sessionsContainer.insertAdjacentHTML('beforeend', sessionRowHtml('', ''));
-    wireSessionRow(sessionsContainer.lastElementChild);
-  });
-
-  document.getElementById('report-cancel').addEventListener('click', closeModal);
-
-  document.getElementById('report-save').addEventListener('click', async () => {
-    const type = document.getElementById('report-type').value;
-    const note = document.getElementById('report-note').value.trim();
-
-    await api(`/api/attendance/day/${date}/events`, { method: 'DELETE' });
-
-    if (!type) {
-      // Blank type cancels the report entirely - events are already cleared above.
-      await api(`/api/absences/${date}`, { method: 'DELETE' });
-      closeModal();
-      updateCal.refresh();
-      refreshStatus();
-      return;
-    }
-
-    const rows = [...sessionsContainer.querySelectorAll('.report-session-row')]
-      .map(row => ({
-        entry: row.querySelector('.report-session-entry').value,
-        exit: row.querySelector('.report-session-exit').value
-      }))
-      .filter(r => r.entry);
-
-    if (type === 'attendance' && rows.length === 0) {
-      alert('יש להזין לפחות שעת כניסה אחת');
-      return;
-    }
-
-    for (const row of rows) {
-      await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: row.entry }) });
-      if (row.exit) {
-        // Cross-midnight: an exit earlier than its own entry means it happened the next day -
-        // the entry always keeps this modal's own date, only the exit's date ever rolls over.
-        const exitDate = row.exit < row.entry ? shiftIsoDate(date, 1) : date;
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date: exitDate, type: 'out', time: row.exit }) });
-      }
-    }
-
-    if (type === 'attendance') {
-      await api(`/api/absences/${date}`, { method: 'DELETE' });
-    } else {
-      await api('/api/absences', { method: 'POST', body: JSON.stringify({ date, type, note }) });
-    }
-
-    closeModal();
-    updateCal.refresh();
-    refreshStatus();
-  });
+  ].map(o => `<option value="${o.value}" ${o.value === selected ? 'selected' : ''}>${o.label}</option>`).join('');
 }
+
+function syncEditorVisibility() {
+  const type = document.getElementById('editor-type').value;
+  const wholeDayWrap = document.getElementById('editor-wholeday-wrap');
+  const wholeDayChecked = document.getElementById('editor-wholeday').checked;
+  wholeDayWrap.classList.toggle('hidden', type === 'attendance');
+  if (type === 'attendance') document.getElementById('editor-wholeday').checked = false;
+  document.getElementById('editor-time-row').style.display = (type !== 'attendance' && wholeDayChecked) ? 'none' : 'flex';
+}
+
+function openEditor(report) {
+  editingReportId = report ? report.id : null;
+  const editor = document.getElementById('day-panel-editor');
+  document.getElementById('editor-type').innerHTML = buildTypeOptions(report ? report.type : 'attendance');
+  document.getElementById('editor-wholeday').checked = !!(report && !report.entryTs);
+  document.getElementById('editor-entry').value = report && report.entryTs ? fmtTime(report.entryTs) : '';
+  document.getElementById('editor-exit').value = report && report.exitTs ? fmtTime(report.exitTs) : '';
+  const note = document.getElementById('editor-note');
+  note.value = (report && report.note) || '';
+  note.classList.toggle('hidden', !(report && report.note));
+  document.getElementById('editor-note-toggle').classList.toggle('hidden', !!(report && report.note));
+  syncEditorVisibility();
+  editor.classList.remove('hidden');
+  editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function closeEditor() {
+  editingReportId = null;
+  const editor = document.getElementById('day-panel-editor');
+  editor.reset();
+  document.getElementById('editor-note').classList.add('hidden');
+  document.getElementById('editor-note-toggle').classList.remove('hidden');
+  editor.classList.add('hidden');
+}
+
+document.getElementById('day-panel-add-btn').addEventListener('click', () => openEditor(null));
+document.getElementById('editor-cancel').addEventListener('click', closeEditor);
+document.getElementById('editor-type').addEventListener('change', syncEditorVisibility);
+document.getElementById('editor-wholeday').addEventListener('change', syncEditorVisibility);
+document.getElementById('editor-note-toggle').addEventListener('click', () => {
+  document.getElementById('editor-note').classList.remove('hidden');
+  document.getElementById('editor-note-toggle').classList.add('hidden');
+});
+
+document.getElementById('day-panel-editor').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const type = document.getElementById('editor-type').value;
+  const wholeDay = type !== 'attendance' && document.getElementById('editor-wholeday').checked;
+  const entry = document.getElementById('editor-entry').value;
+  const exit = document.getElementById('editor-exit').value;
+  const note = document.getElementById('editor-note').value.trim();
+
+  if (!wholeDay && !entry) {
+    alert('יש להזין שעת כניסה, או לסמן יום שלם');
+    return;
+  }
+
+  const body = { date: panelDate, type, wholeDay, entry: wholeDay ? null : entry, exit: wholeDay ? null : (exit || null), note: note || null };
+  if (!wholeDay && exit) {
+    // Cross-midnight: an exit earlier than its own entry happened the next day - the entry
+    // always keeps this panel's own date, only the exit's date ever rolls over.
+    body.exitDate = exit < entry ? shiftIsoDate(panelDate, 1) : panelDate;
+  }
+
+  if (editingReportId) {
+    await api(`/api/attendance/reports/${editingReportId}`, { method: 'PUT', body: JSON.stringify(body) });
+  } else {
+    await api('/api/attendance/reports', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  await loadDayPanel(panelDate);
+  updateCal.refresh();
+  refreshStatus();
+});
 
 /* ---------- analyzed sheet screen ---------- */
 function createSheetController() {
@@ -353,15 +382,13 @@ function createSheetController() {
     return minutes ? minutesToLabel(minutes) : '';
   }
 
-  // green = real clock punches with no report overriding the day; blue = a presence-category
-  // report (off-site, e.g. conference/company event); red = an absence-category report.
-  function dotClassForDay(day) {
-    if (day.absence) {
-      const category = (REPORT_TYPES_BY_CODE[day.absence.type] || {}).category;
-      return category === 'presence' ? 'presence-dot-blue' : 'presence-dot-red';
-    }
-    if (day.rows.some(r => r.firstIn)) return 'presence-dot-green';
-    return '';
+  // green = a plain attendance report/clock session; blue = a presence-category report (off-site,
+  // e.g. conference/company event); red = an absence-category report. Each row carries its own
+  // type now, so this is per-row, not a single day-level indicator.
+  function dotClassForRow(row) {
+    if (!row.type || row.type === 'attendance') return row.firstIn ? 'presence-dot-green' : '';
+    const category = (REPORT_TYPES_BY_CODE[row.type] || {}).category;
+    return category === 'presence' ? 'presence-dot-blue' : 'presence-dot-red';
   }
 
   function render(data) {
@@ -369,35 +396,37 @@ function createSheetController() {
     tbody.innerHTML = data.days.map(day => {
       const rowClasses = [];
       if (day.date === today) rowClasses.push('today');
-      if (day.dayType === 'rest') rowClasses.push('rest-day');
+      if (day.isDayOff) rowClasses.push('day-off');
 
-      const badges = [];
-      if (day.isHoliday) badges.push('חג');
-      if (day.isHolidayEve) badges.push('ערב חג');
-      let noteClass = '';
-      if (day.absence) {
-        const meta = REPORT_TYPES_BY_CODE[day.absence.type];
-        badges.push(meta ? meta.name : day.absence.type);
-        noteClass = meta && meta.category === 'presence' ? 'note-vacation' : 'note-sick';
-      } else if (day.dayType === 'rest') {
-        badges.push('שבת');
-      }
-      const note = badges.join(', ');
-      const dotClass = dotClassForDay(day);
+      const dayBadges = [];
+      if (day.isHoliday) dayBadges.push('חג');
+      else if (day.isHolidayEve) dayBadges.push('ערב חג');
+      else if (day.isDayOff) dayBadges.push('שבת');
+      const weekdayCell = dayBadges.length
+        ? `${WEEKDAYS[day.weekday]}<br><small>${dayBadges.join(', ')}</small>`
+        : WEEKDAYS[day.weekday];
 
-      return day.rows.map((row, i) => `
+      return day.rows.map((row, i) => {
+        const noteParts = [];
+        if (row.type && row.type !== 'attendance') noteParts.push(reportTypeLabel(row.type));
+        if (row.note) noteParts.push(row.note);
+        const noteClass = row.type && row.type !== 'attendance'
+          ? ((REPORT_TYPES_BY_CODE[row.type] || {}).category === 'presence' ? 'note-vacation' : 'note-sick')
+          : '';
+        return `
         <tr class="${rowClasses.join(' ')}">
           ${i === 0 ? `<td rowspan="${day.rows.length}">${Number(day.date.slice(8, 10))}</td>` : ''}
-          ${i === 0 ? `<td rowspan="${day.rows.length}">${WEEKDAYS[day.weekday]}</td>` : ''}
-          <td><span class="presence-dot ${dotClass}"></span></td>
+          ${i === 0 ? `<td rowspan="${day.rows.length}">${weekdayCell}</td>` : ''}
+          <td><span class="presence-dot ${dotClassForRow(row)}"></span></td>
           <td>${row.firstIn ? fmtTime(row.firstIn) : ''}</td>
           <td>${row.lastOut ? fmtTime(row.lastOut) : ''}</td>
           <td>${hoursCell(row.minutes.regular)}</td>
           <td>${hoursCell(row.minutes.ot125)}</td>
           <td>${hoursCell(row.minutes.ot150)}</td>
           <td>${hoursCell(row.minutes.shabbat)}</td>
-          ${i === 0 ? `<td class="${noteClass}" rowspan="${day.rows.length}">${note}</td>` : ''}
-        </tr>`).join('');
+          <td class="${noteClass}">${noteParts.join(' - ')}</td>
+        </tr>`;
+      }).join('');
     }).join('');
 
     const absenceSummary = Object.entries(data.totals.absenceCounts)

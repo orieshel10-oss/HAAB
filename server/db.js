@@ -219,6 +219,29 @@ async function init() {
     -- Superseded by the report_types catalog below: type is now validated at the app layer
     -- against that org's whitelist instead of a fixed list baked into a CHECK constraint.
     ALTER TABLE absences DROP CONSTRAINT IF EXISTS absences_type_check;
+    -- Superseded entirely by attendance_reports below (kept, not dropped, to avoid a destructive
+    -- change to the shared DB over a table that might still hold data worth a look) - the app no
+    -- longer reads or writes this table.
+
+    -- The exclusive source for anything entered via the עדכון נוכחות screen: each report (type,
+    -- optional entry/exit, optional note) is its own row, independent of real clock-machine
+    -- punches (attendance_events, driven only by the home screen's live in/out buttons). A day
+    -- can now carry several reports of different types (e.g. half attendance, half sick).
+    -- entry_ts/exit_ts are full timestamps (not bare HH:MM) for the same cross-midnight reasons
+    -- attendance_events already uses full timestamps - both null only for a whole-day report
+    -- with no specific times.
+    CREATE TABLE IF NOT EXISTS attendance_reports (
+      id SERIAL PRIMARY KEY,
+      client_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      type TEXT NOT NULL,
+      entry_ts TIMESTAMPTZ,
+      exit_ts TIMESTAMPTZ,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_attendance_reports_emp_date ON attendance_reports(employee_id, date);
 
     -- Product-level catalog of reportable attendance/absence types (replaces the old hardcoded
     -- ABSENCE_TYPES list). category drives the sheet's presence/absence/off-site dot color.

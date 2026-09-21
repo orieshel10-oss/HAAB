@@ -21,12 +21,11 @@ const {
   pad,
   toDateKey,
   nowIso,
-  computeMinutes,
   pairSessions,
   groupSessionsIntoRows,
-  minutesToLabel,
   shiftDateStr,
   dayTypeFromDate,
+  calendarRestDow,
   splitDayMinutes,
   standardDayMinutes
 } = require('./attendance');
@@ -50,9 +49,9 @@ app.use('/api/system', systemAdminRouter);
 app.use('/api/org', orgPortalRouter);
 app.use('/api/employee', employeePortalRouter);
 
-// Every clock-in/out/absence/sheet route below acts on the logged-in employee's own record -
+// Every clock-in/out/reports/sheet route below acts on the logged-in employee's own record -
 // CLIENT_ID/EMPLOYEE_ID are gone, replaced by req.session.employeeOrgId/employeeId.
-app.use(['/api/status', '/api/clock', '/api/absences', '/api/attendance'], requireEmployee);
+app.use(['/api/status', '/api/clock', '/api/attendance'], requireEmployee);
 
 function asyncHandler(fn) {
   return (req, res, next) => fn(req, res, next).catch(next);
@@ -100,64 +99,31 @@ app.post('/api/clock', asyncHandler(async (req, res) => {
   res.json({ lastEvent: { type, ts }, isIn: type === 'in' });
 }));
 
-app.get('/api/absences', asyncHandler(async (req, res) => {
-  const year = Number(req.query.year);
-  const month = Number(req.query.month);
-  const { start, end } = monthRange(year, month);
+// Validates a non-'attendance' type against this org's report-types whitelist (same
+// effective_from/effective_until window check used throughout the org-scoped routes).
+async function isReportTypeWhitelisted(orgId, type) {
   const { rows } = await pool.query(
-    'SELECT date, type, note FROM absences WHERE employee_id = $1 AND date BETWEEN $2 AND $3 ORDER BY date',
-    [req.session.employeeId, start, end]
-  );
-  res.json(rows);
-}));
-
-app.post('/api/absences', asyncHandler(async (req, res) => {
-  const { date, type, note } = req.body || {};
-  if (!date || !type) {
-    return res.status(400).json({ error: 'date and type are required' });
-  }
-  const whitelisted = await pool.query(
     `SELECT 1 FROM org_report_types
      WHERE org_id = $1 AND type_code = $2
        AND (effective_from IS NULL OR effective_from <= to_char(now(), 'YYYY-MM-DD'))
        AND (effective_until IS NULL OR effective_until >= to_char(now(), 'YYYY-MM-DD'))`,
-    [req.session.employeeOrgId, type]
+    [orgId, type]
   );
-  if (!whitelisted.rows[0]) {
-    return res.status(400).json({ error: 'type is not enabled for this organization' });
-  }
-  await pool.query(
-    `INSERT INTO absences (client_id, employee_id, date, type, note)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (employee_id, date) DO UPDATE SET type = excluded.type, note = excluded.note`,
-    [req.session.employeeOrgId, req.session.employeeId, date, type, note || null]
-  );
-  res.json({ ok: true });
-}));
+  return !!rows[0];
+}
 
-app.delete('/api/absences/:date', asyncHandler(async (req, res) => {
-  await pool.query('DELETE FROM absences WHERE employee_id = $1 AND date = $2', [req.session.employeeId, req.params.date]);
-  res.json({ ok: true });
-}));
-
-app.get('/api/attendance/summary', asyncHandler(async (req, res) => {
-  const year = Number(req.query.year);
-  const month = Number(req.query.month);
-  const { start, end } = monthRange(year, month);
-  const events = await fetchEventsPadded(req.session.employeeId, start, end);
-
-  const byDay = {};
-  for (const ev of events) {
-    const key = toDateKey(ev.ts);
-    if (key < start || key > end) continue;
-    (byDay[key] = byDay[key] || []).push(ev);
-  }
-  const result = Object.entries(byDay).map(([date, evs]) => {
-    const minutes = computeMinutes(evs);
-    return { date, minutes, label: minutesToLabel(minutes) };
-  });
-  res.json(result);
-}));
+// entry/exit are bare 'HH:MM'; exitDate is resolved client-side (today or tomorrow, per the
+// cross-midnight rule) so this stays a simple date+time-string join, same as attendance_events.
+function resolveReportBody(body) {
+  const { date, type, entry, exit, exitDate, wholeDay, note } = body || {};
+  if (!date || !type) return { error: 'date and type are required' };
+  if (type === 'attendance' && wholeDay) return { error: 'wholeDay is not valid for type attendance' };
+  if (wholeDay) return { data: { date, type, entryTs: null, exitTs: null, note: note || null } };
+  if (!entry) return { error: 'entry is required unless wholeDay is set' };
+  const entryTs = new Date(`${date}T${entry}:00`).toISOString();
+  const exitTs = exit ? new Date(`${exitDate || date}T${exit}:00`).toISOString() : null;
+  return { data: { date, type, entryTs, exitTs, note: note || null } };
+}
 
 app.get('/api/attendance/day', asyncHandler(async (req, res) => {
   const date = req.query.date;
@@ -165,11 +131,58 @@ app.get('/api/attendance/day', asyncHandler(async (req, res) => {
   const events = (await fetchEventsPadded(req.session.employeeId, date, date))
     .filter((ev) => toDateKey(ev.ts) === date)
     .map((ev) => ({ id: ev.id, type: ev.type, ts: ev.ts, source: ev.source }));
-  const { rows } = await pool.query(
-    'SELECT type, note FROM absences WHERE employee_id = $1 AND date = $2',
+  const { rows: reports } = await pool.query(
+    `SELECT id, type, entry_ts, exit_ts, note FROM attendance_reports
+     WHERE employee_id = $1 AND date = $2 ORDER BY entry_ts NULLS FIRST, created_at`,
     [req.session.employeeId, date]
   );
-  res.json({ events, absence: rows[0] || null, minutes: computeMinutes(events) });
+  res.json({
+    events,
+    reports: reports.map((r) => ({ id: r.id, type: r.type, entryTs: r.entry_ts, exitTs: r.exit_ts, note: r.note }))
+  });
+}));
+
+app.post('/api/attendance/reports', asyncHandler(async (req, res) => {
+  const resolved = resolveReportBody(req.body);
+  if (resolved.error) return res.status(400).json({ error: resolved.error });
+  const d = resolved.data;
+  if (d.type !== 'attendance' && !(await isReportTypeWhitelisted(req.session.employeeOrgId, d.type))) {
+    return res.status(400).json({ error: 'type is not enabled for this organization' });
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO attendance_reports (client_id, employee_id, date, type, entry_ts, exit_ts, note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, type, entry_ts, exit_ts, note`,
+    [req.session.employeeOrgId, req.session.employeeId, d.date, d.type, d.entryTs, d.exitTs, d.note]
+  );
+  const r = rows[0];
+  res.json({ id: r.id, type: r.type, entryTs: r.entry_ts, exitTs: r.exit_ts, note: r.note });
+}));
+
+app.put('/api/attendance/reports/:id', asyncHandler(async (req, res) => {
+  const resolved = resolveReportBody(req.body);
+  if (resolved.error) return res.status(400).json({ error: resolved.error });
+  const d = resolved.data;
+  if (d.type !== 'attendance' && !(await isReportTypeWhitelisted(req.session.employeeOrgId, d.type))) {
+    return res.status(400).json({ error: 'type is not enabled for this organization' });
+  }
+  const { rows } = await pool.query(
+    `UPDATE attendance_reports SET date=$1, type=$2, entry_ts=$3, exit_ts=$4, note=$5
+     WHERE id = $6 AND employee_id = $7
+     RETURNING id, type, entry_ts, exit_ts, note`,
+    [d.date, d.type, d.entryTs, d.exitTs, d.note, Number(req.params.id), req.session.employeeId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = rows[0];
+  res.json({ id: r.id, type: r.type, entryTs: r.entry_ts, exitTs: r.exit_ts, note: r.note });
+}));
+
+app.delete('/api/attendance/reports/:id', asyncHandler(async (req, res) => {
+  const del = await pool.query(
+    'DELETE FROM attendance_reports WHERE id = $1 AND employee_id = $2',
+    [Number(req.params.id), req.session.employeeId]
+  );
+  if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 }));
 
 app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
@@ -177,15 +190,44 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
   const month = Number(req.query.month);
   const { start, end } = monthRange(year, month);
 
-  // Sessions are attributed to their check-in's own calendar date (so an overnight shift's
-  // hours land entirely on the day it started), then grouped for pay-split purposes per the
-  // merge rule in groupSessionsIntoRows - unrelated to the padded fetch window, which exists
-  // purely so a session crossing the month boundary is still visible to the pairing step.
+  // Two independent sources feed the same "sessions" pipeline: real clock-machine punches
+  // (attendance_events, tagged type='attendance'/note=null here) and manually-entered reports
+  // that have their own time (attendance_reports.entry_ts, carrying their own type/note - a day
+  // can now mix e.g. half attendance and half sick). Sessions are attributed to their check-in's
+  // own calendar date (so an overnight shift's hours land entirely on the day it started), then
+  // merged together chronologically before groupSessionsIntoRows's existing merge rule runs -
+  // unrelated to the padded fetch window, which exists purely so a session crossing the month
+  // boundary is still visible to the pairing step.
   const rawEvents = await fetchEventsPadded(req.session.employeeId, start, end);
-  const allSessions = pairSessions(rawEvents).filter((s) => {
-    const key = toDateKey(s.inTs);
-    return key >= start && key <= end;
+  const clockSessions = pairSessions(rawEvents).map((s) => ({ ...s, type: 'attendance', note: null }));
+
+  const { rows: reportRows } = await pool.query(
+    `SELECT date, type, entry_ts, exit_ts, note FROM attendance_reports
+     WHERE employee_id = $1 AND date BETWEEN $2 AND $3`,
+    [req.session.employeeId, start, end]
+  );
+  // A report can have an entry with no exit yet (still open - exit unknown), same as a real
+  // clock-in with no matching clock-out. Such a session can never enter the merge/duration math
+  // below (null outTs there would corrupt the date arithmetic) - it always renders as its own
+  // zero-hours row instead, exactly like an unmatched clock-in is already dropped by pairSessions.
+  const timedReportSessions = reportRows
+    .filter((r) => r.entry_ts && r.exit_ts)
+    .map((r) => ({ inTs: r.entry_ts, outTs: r.exit_ts, type: r.type, note: r.note }));
+  const openReportsByDate = {};
+  reportRows.filter((r) => r.entry_ts && !r.exit_ts).forEach((r) => {
+    (openReportsByDate[r.date] = openReportsByDate[r.date] || []).push(r);
   });
+  const wholeDayReportsByDate = {};
+  reportRows.filter((r) => !r.entry_ts).forEach((r) => {
+    (wholeDayReportsByDate[r.date] = wholeDayReportsByDate[r.date] || []).push(r);
+  });
+
+  const allSessions = [...clockSessions, ...timedReportSessions]
+    .filter((s) => {
+      const key = toDateKey(s.inTs);
+      return key >= start && key <= end;
+    })
+    .sort((a, b) => new Date(a.inTs) - new Date(b.inTs));
   const groups = groupSessionsIntoRows(allSessions);
 
   const rowsByDate = {};
@@ -196,22 +238,39 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     const rows = group.sessions.map((s, i) => ({
       firstIn: s.inTs,
       lastOut: s.outTs,
+      type: s.type,
+      note: s.note,
       minutes: i === group.sessions.length - 1 ? split : { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
       showTotals: i === group.sessions.length - 1
     }));
     (rowsByDate[group.date] = rowsByDate[group.date] || []).push(...rows);
   }
-
-  const { rows: absenceRows } = await pool.query(
-    'SELECT date, type, note FROM absences WHERE employee_id = $1 AND date BETWEEN $2 AND $3',
-    [req.session.employeeId, start, end]
-  );
-  const absenceMap = {};
-  absenceRows.forEach((a) => { absenceMap[a.date] = a; });
+  Object.entries(openReportsByDate).forEach(([ds, reports]) => {
+    const openRows = reports.map((r) => ({
+      firstIn: r.entry_ts,
+      lastOut: null,
+      type: r.type,
+      note: r.note,
+      minutes: { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+      showTotals: true
+    }));
+    (rowsByDate[ds] = rowsByDate[ds] || []).push(...openRows);
+  });
+  Object.entries(wholeDayReportsByDate).forEach(([ds, reports]) => {
+    const dayType = dayTypeFromDate(...ds.split('-').map(Number));
+    const wholeDayRows = reports.map((r) => ({
+      firstIn: null,
+      lastOut: null,
+      type: r.type,
+      note: r.note,
+      minutes: { regular: standardDayMinutes(dayType), ot125: 0, ot150: 0, shabbat: 0 },
+      showTotals: true
+    }));
+    (rowsByDate[ds] = rowsByDate[ds] || []).push(...wholeDayRows);
+  });
 
   // Holiday/eve indicators follow the employee's own agreement's linked holiday calendar (no
-  // agreement, or holiday_calendar='none', means neither is ever shown). Eve-of-holiday is only
-  // meaningful for the Jewish calendar per the org's own convention.
+  // agreement, or holiday_calendar='none', means neither is ever shown).
   const { rows: agreementRows } = await pool.query(
     `SELECT aa.holiday_calendar FROM employees e
      JOIN attendance_agreements aa ON aa.code = e.agreement_code
@@ -229,6 +288,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     holidaySet = new Set(holidayRows.filter((h) => !h.is_eve).map((h) => h.date));
     holidayEveSet = new Set(holidayRows.filter((h) => h.is_eve).map((h) => h.date));
   }
+  const restDow = calendarRestDow(holidayCalendar);
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, absenceCounts: {} };
@@ -236,89 +296,43 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
 
   for (let d = 1; d <= daysInMonth; d++) {
     const ds = `${year}-${pad(month)}-${pad(d)}`;
+    const weekday = new Date(year, month - 1, d).getDay();
     const dayType = dayTypeFromDate(year, month, d);
-    const absence = absenceMap[ds] || null;
+    const isHoliday = holidaySet.has(ds);
     let rows = rowsByDate[ds];
     if (!rows || !rows.length) {
-      // No clock sessions that day: an absence with nothing to go on is credited a full
-      // standard day (unchanged policy); otherwise a single blank placeholder row keeps the
-      // sheet showing every day of the month, not just worked ones.
+      // No reports or clock sessions that day: a single blank placeholder row keeps the sheet
+      // showing every day of the month, not just ones with something reported.
       rows = [{
         firstIn: null,
         lastOut: null,
-        minutes: absence
-          ? { regular: standardDayMinutes(dayType), ot125: 0, ot150: 0, shabbat: 0 }
-          : { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+        type: null,
+        note: null,
+        minutes: { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
         showTotals: true
       }];
     }
 
-    if (absence) totals.absenceCounts[absence.type] = (totals.absenceCounts[absence.type] || 0) + 1;
     rows.forEach((r) => {
       totals.regular += r.minutes.regular;
       totals.ot125 += r.minutes.ot125;
       totals.ot150 += r.minutes.ot150;
       totals.shabbat += r.minutes.shabbat;
+      if (r.type && r.type !== 'attendance') totals.absenceCounts[r.type] = (totals.absenceCounts[r.type] || 0) + 1;
     });
 
     days.push({
       date: ds,
-      weekday: new Date(year, month - 1, d).getDay(),
+      weekday,
       dayType,
-      isHoliday: holidaySet.has(ds),
+      isHoliday,
       isHolidayEve: holidayEveSet.has(ds),
-      absence,
+      isDayOff: weekday === restDow || isHoliday,
       rows
     });
   }
 
   res.json({ days, totals });
-}));
-
-app.post('/api/attendance/manual', asyncHandler(async (req, res) => {
-  const { date, type, time } = req.body || {};
-  if (!date || !time || (type !== 'in' && type !== 'out')) {
-    return res.status(400).json({ error: 'date, time and type ("in"|"out") are required' });
-  }
-  const ts = new Date(`${date}T${time}:00`).toISOString();
-  const { rows } = await pool.query(
-    'INSERT INTO attendance_events (client_id, employee_id, type, ts, source) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-    [req.session.employeeOrgId, req.session.employeeId, type, ts, 'manual']
-  );
-  res.json({ id: rows[0].id, type, ts });
-}));
-
-app.put('/api/attendance/event/:id', asyncHandler(async (req, res) => {
-  const { time } = req.body || {};
-  if (!time) return res.status(400).json({ error: 'time is required' });
-  const { rows } = await pool.query(
-    'SELECT ts FROM attendance_events WHERE id = $1 AND employee_id = $2',
-    [Number(req.params.id), req.session.employeeId]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'not found' });
-  const dateKey = toDateKey(rows[0].ts);
-  const ts = new Date(`${dateKey}T${time}:00`).toISOString();
-  await pool.query("UPDATE attendance_events SET ts = $1, source = 'manual' WHERE id = $2", [ts, Number(req.params.id)]);
-  res.json({ ok: true, ts });
-}));
-
-app.delete('/api/attendance/event/:id', asyncHandler(async (req, res) => {
-  await pool.query('DELETE FROM attendance_events WHERE id = $1 AND employee_id = $2', [
-    Number(req.params.id),
-    req.session.employeeId
-  ]);
-  res.json({ ok: true });
-}));
-
-app.delete('/api/attendance/day/:date/events', asyncHandler(async (req, res) => {
-  const date = req.params.date;
-  const ids = (await fetchEventsPadded(req.session.employeeId, date, date))
-    .filter((ev) => toDateKey(ev.ts) === date)
-    .map((ev) => ev.id);
-  if (ids.length) {
-    await pool.query('DELETE FROM attendance_events WHERE employee_id = $1 AND id = ANY($2::int[])', [req.session.employeeId, ids]);
-  }
-  res.json({ ok: true, deleted: ids.length });
 }));
 
 app.use((err, req, res, next) => {

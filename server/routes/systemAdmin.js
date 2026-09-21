@@ -138,6 +138,10 @@ router.delete('/organizations/:id', asyncHandler(async (req, res) => {
       `DELETE FROM absences WHERE employee_id IN (SELECT id FROM employees WHERE client_id = $1)`,
       [orgId]
     );
+    await client.query(
+      `DELETE FROM attendance_reports WHERE employee_id IN (SELECT id FROM employees WHERE client_id = $1)`,
+      [orgId]
+    );
     await client.query('DELETE FROM employees WHERE client_id = $1', [orgId]);
     await client.query('DELETE FROM org_admins WHERE org_id = $1', [orgId]);
     await client.query('DELETE FROM sub_organizations WHERE org_id = $1', [orgId]);
@@ -493,7 +497,7 @@ router.put('/report-types/:code', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/report-types/:code', asyncHandler(async (req, res) => {
-  const { rows: uses } = await pool.query('SELECT id FROM absences WHERE type = $1 LIMIT 1', [req.params.code]);
+  const { rows: uses } = await pool.query('SELECT id FROM attendance_reports WHERE type = $1 LIMIT 1', [req.params.code]);
   if (uses.length > 0) {
     return res.status(409).json({ error: 'in_use' });
   }

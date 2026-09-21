@@ -89,6 +89,16 @@ function dayTypeFromDate(year, month, day) {
   return 'regular';
 }
 
+// Purely a display concept for the "day off" blue highlighting (calendar grid + sheet rows) -
+// unrelated to dayTypeFromDate above, which stays Saturday-only for the actual pay-category
+// split (a bigger, already-deferred piece of per-agreement work). Eve-of-holiday is deliberately
+// not a day off here - it's a shortened workday, per the org's own convention.
+function calendarRestDow(holidayCalendar) {
+  if (holidayCalendar === 'christian') return 0; // Sunday
+  if (holidayCalendar === 'muslim') return 5; // Friday
+  return 6; // jewish, none, or no agreement - Saturday
+}
+
 function standardDayMinutes(dayType) {
   if (dayType === 'rest') return 0;
   return dayType === 'shortened' ? 7 * 60 : 8 * 60;
@@ -120,6 +130,7 @@ module.exports = {
   minutesToLabel,
   shiftDateStr,
   dayTypeFromDate,
+  calendarRestDow,
   splitDayMinutes,
   standardDayMinutes
 };
