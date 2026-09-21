@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { verifyPassword, verifyTotpCode, isValidIsraeliId, resolveOrgContext } = require('../auth');
+const { verifyPassword, verifyTotpCode, isValidIsraeliId, resolveOrgContext, hashPassword } = require('../auth');
 const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin } = require('../orgAdmins');
 
 const router = express.Router();
@@ -112,7 +112,7 @@ router.get('/sub-organizations', asyncHandler(async (req, res) => {
 
 const EMPLOYEE_COLUMNS = `id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
   email, mobile, city_code, street, house_number, apartment, entrance, zip_code, sub_org_id,
-  employment_start_date, employment_end_date, agreement_code`;
+  employment_start_date, employment_end_date, agreement_code, (password_hash IS NOT NULL) AS has_password`;
 
 // Active = today is on/after the start date (or no start date set) AND on/before the end date
 // (or no end date set) - so a brand-new employee with neither date is active by default, and
@@ -149,9 +149,10 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   const {
     idNumber, idType, firstName, lastName, firstNameEn, lastNameEn,
     email, mobile, cityCode, street, houseNumber, apartment, entrance, zipCode, subOrgId,
-    employmentStartDate, employmentEndDate, agreementCode
+    employmentStartDate, employmentEndDate, agreementCode, password
   } = body || {};
 
+  if (password && password.length < 6) return { status: 400, error: 'password must be at least 6 characters' };
   if (!firstName || !lastName) return { status: 400, error: 'firstName and lastName are required' };
   if (!mobile) return { status: 400, error: 'mobile is required' };
   if (!MOBILE_RE.test(mobile)) return { status: 400, error: 'invalid mobile number' };
@@ -202,7 +203,7 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
       apartment: apartment || null, entrance: entrance || null, zipCode: zipCode || null,
       subOrgId: subOrgId || null,
       employmentStartDate: employmentStartDate || null, employmentEndDate: employmentEndDate || null,
-      agreementCode
+      agreementCode, password: password || null
     }
   };
 }
@@ -213,19 +214,25 @@ router.post('/employees', asyncHandler(async (req, res) => {
   if (validation.error) return res.status(validation.status).json({ error: validation.error });
   const d = validation.data;
   const name = `${d.firstName} ${d.lastName}`.trim();
+  const passwordHash = d.password ? await hashPassword(d.password) : null;
 
-  const { rows } = await pool.query(
-    `INSERT INTO employees
-       (client_id, name, sub_org_id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
-        email, mobile, city_code, street, house_number, apartment, entrance, zip_code,
-        employment_start_date, employment_end_date, agreement_code)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-     RETURNING ${EMPLOYEE_COLUMNS}`,
-    [orgId, name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
-      d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
-      d.employmentStartDate, d.employmentEndDate, d.agreementCode]
-  );
-  res.json(rows[0]);
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO employees
+         (client_id, name, sub_org_id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
+          email, mobile, city_code, street, house_number, apartment, entrance, zip_code,
+          employment_start_date, employment_end_date, agreement_code, password_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       RETURNING ${EMPLOYEE_COLUMNS}`,
+      [orgId, name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
+        d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
+        d.employmentStartDate, d.employmentEndDate, d.agreementCode, passwordHash]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'idNumber already exists for another employee in this organization' });
+    throw err;
+  }
 }));
 
 async function findScopedEmployee(id, orgId, subOrgRestriction) {
@@ -246,19 +253,39 @@ router.put('/employees/:id', asyncHandler(async (req, res) => {
   const d = validation.data;
   const name = `${d.firstName} ${d.lastName}`.trim();
 
-  const { rows } = await pool.query(
-    `UPDATE employees SET name=$1, sub_org_id=$2, id_number=$3, id_type=$4, first_name=$5, last_name=$6,
-       first_name_en=$7, last_name_en=$8, email=$9, mobile=$10, city_code=$11, street=$12, house_number=$13,
-       apartment=$14, entrance=$15, zip_code=$16, employment_start_date=$17, employment_end_date=$18,
-       agreement_code=$19
-     WHERE id = $20 AND client_id = $21
-     RETURNING ${EMPLOYEE_COLUMNS}`,
-    [name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
-      d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
-      d.employmentStartDate, d.employmentEndDate, d.agreementCode,
-      Number(req.params.id), orgId]
-  );
-  res.json(rows[0]);
+  try {
+    // A blank password on edit means "leave it unchanged" (same convention as org_admins'
+    // password field) - only touch password_hash when a new one was actually submitted.
+    const { rows } = d.password
+      ? await pool.query(
+          `UPDATE employees SET name=$1, sub_org_id=$2, id_number=$3, id_type=$4, first_name=$5, last_name=$6,
+             first_name_en=$7, last_name_en=$8, email=$9, mobile=$10, city_code=$11, street=$12, house_number=$13,
+             apartment=$14, entrance=$15, zip_code=$16, employment_start_date=$17, employment_end_date=$18,
+             agreement_code=$19, password_hash=$20
+           WHERE id = $21 AND client_id = $22
+           RETURNING ${EMPLOYEE_COLUMNS}`,
+          [name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
+            d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
+            d.employmentStartDate, d.employmentEndDate, d.agreementCode, await hashPassword(d.password),
+            Number(req.params.id), orgId]
+        )
+      : await pool.query(
+          `UPDATE employees SET name=$1, sub_org_id=$2, id_number=$3, id_type=$4, first_name=$5, last_name=$6,
+             first_name_en=$7, last_name_en=$8, email=$9, mobile=$10, city_code=$11, street=$12, house_number=$13,
+             apartment=$14, entrance=$15, zip_code=$16, employment_start_date=$17, employment_end_date=$18,
+             agreement_code=$19
+           WHERE id = $20 AND client_id = $21
+           RETURNING ${EMPLOYEE_COLUMNS}`,
+          [name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
+            d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
+            d.employmentStartDate, d.employmentEndDate, d.agreementCode,
+            Number(req.params.id), orgId]
+        );
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'idNumber already exists for another employee in this organization' });
+    throw err;
+  }
 }));
 
 router.delete('/employees/:id', asyncHandler(async (req, res) => {

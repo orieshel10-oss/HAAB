@@ -117,6 +117,10 @@ async function init() {
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS zip_code TEXT;
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS employment_start_date TEXT;
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS employment_end_date TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    -- id_number is the employee's login username, unique per org once set - partial index so the
+    -- legacy single-tenant seed row (no id_number) never conflicts.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_client_id_number ON employees(client_id, id_number) WHERE id_number IS NOT NULL;
 
     -- Product-level catalog, defined by System Admin (Phase 3: structured form; Phase 4 adds the
     -- AI conversational "expert" flow on top of the same fields).

@@ -34,6 +34,13 @@ function requireSystemAdmin(req, res, next) {
   next();
 }
 
+function requireEmployee(req, res, next) {
+  if (!req.session || !req.session.employeeId) {
+    return res.status(401).json({ error: 'not authenticated' });
+  }
+  next();
+}
+
 // Standard Israeli ID (ת.ז.) check-digit algorithm: pad to 9 digits, alternately weight each
 // digit by 1/2 from the left, digit-sum any product >= 10, valid iff the total is divisible by 10.
 function isValidIsraeliId(id) {
@@ -86,6 +93,7 @@ module.exports = {
   totpEnrollUri,
   verifyTotpCode,
   requireSystemAdmin,
+  requireEmployee,
   isValidIsraeliId,
   resolveOrgContext
 };

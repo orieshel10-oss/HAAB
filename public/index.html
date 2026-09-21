@@ -13,8 +13,48 @@
 <body>
 <div id="app">
 
+  <!-- מסך בחירת ארגון: מוצג פעם ראשונה בלבד, קוד הארגון נשמר במכשיר -->
+  <section class="screen" id="screen-org-select">
+    <header class="topbar topbar-brand">
+      <img src="icons/icon-192.png" alt="HAAB" class="brand-logo" />
+      <h1>HAAB</h1>
+    </header>
+    <div class="content">
+      <p class="auth-intro">לאיזה ארגון אתם שייכים?</p>
+      <form class="auth-form" id="org-select-form">
+        <label>קוד ארגון</label>
+        <input id="org-select-code" inputmode="numeric" maxlength="6" placeholder="6 ספרות" required />
+        <div class="field-msg error" id="org-select-msg"></div>
+        <button type="submit" class="btn-auth">המשך</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- מסך כניסת עובד: מוצג כל עוד לא מחוברים, לאחר שקוד הארגון כבר נשמר -->
+  <section class="screen" id="screen-employee-login">
+    <header class="topbar topbar-brand">
+      <img src="icons/icon-192.png" alt="HAAB" class="brand-logo brand-logo-small" />
+      <img class="org-logo-small hidden" id="employee-login-org-logo" alt="" />
+      <h1 id="employee-login-org-name">HAAB</h1>
+    </header>
+    <div class="content">
+      <form class="auth-form" id="employee-login-form">
+        <label>ת.ז. / מספר עובד</label>
+        <input id="employee-login-id" inputmode="numeric" required />
+        <label>סיסמה</label>
+        <div class="pw-wrap">
+          <input id="employee-login-password" type="password" required />
+          <button type="button" id="employee-login-password-toggle" class="pw-toggle">👁</button>
+        </div>
+        <div class="field-msg error" id="employee-login-msg"></div>
+        <button type="submit" class="btn-auth">כניסה</button>
+      </form>
+      <button class="link-btn" id="change-org-btn">לא הארגון שלך? החלפת ארגון</button>
+    </div>
+  </section>
+
   <!-- מסך ראשי -->
-  <section class="screen active" id="screen-home">
+  <section class="screen" id="screen-home">
     <header class="topbar topbar-brand">
       <img src="icons/icon-192.png" alt="HAAB" class="brand-logo" />
       <h1>HAAB</h1>
@@ -51,6 +91,11 @@
         <button class="menu-item" data-nav="sheet">
           <span class="menu-icon">📊</span>
           <span class="menu-label">גליון מנותח</span>
+          <span class="menu-arrow">‹</span>
+        </button>
+        <button class="menu-item" id="employee-logout-btn">
+          <span class="menu-icon">🚪</span>
+          <span class="menu-label">יציאה</span>
           <span class="menu-arrow">‹</span>
         </button>
       </nav>

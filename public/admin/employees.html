@@ -25,8 +25,8 @@
         </div>
       </div>
       <table class="admin-table">
-        <thead><tr><th>שם</th><th>ת.ז./דרכון</th><th>נייד</th><th>תת-ארגון</th><th></th><th></th></tr></thead>
-        <tbody id="emp-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+        <thead><tr><th>שם</th><th>ת.ז./דרכון</th><th>נייד</th><th>תת-ארגון</th><th>גישה לאפליקציה</th><th></th><th></th></tr></thead>
+        <tbody id="emp-tbody"><tr class="empty-row"><td colspan="7">טוען...</td></tr></tbody>
       </table>
 
       <form class="admin-form hidden" id="emp-form">
@@ -102,6 +102,16 @@
         <div>
           <label>הסכם נוכחות</label>
           <select id="emp-agreement" required></select>
+        </div>
+
+        <div class="modal-section-title">גישה לאפליקציה</div>
+        <div>
+          <label id="emp-password-label">סיסמה לכניסת עובד (לא חובה)</label>
+          <div class="pw-wrap">
+            <input id="emp-password" type="password" minlength="6" />
+            <button type="button" id="emp-password-toggle" class="pw-toggle">👁</button>
+          </div>
+          <div class="field-msg" id="emp-password-msg"></div>
         </div>
 
         <div class="form-msg" id="emp-form-msg"></div>
@@ -388,9 +398,10 @@ async function loadEmployees() {
       <td>${e.id_number || ''} ${e.id_type === 'passport' ? '(דרכון)' : ''}</td>
       <td>${e.mobile || ''}</td>
       <td>${e.sub_org_id ? subOrgName(e.sub_org_id) : '-'}</td>
+      <td>${e.has_password ? '<span class="badge badge-org-admin">פעיל</span>' : '<span class="badge badge-time-admin">טרם הוגדרה סיסמה</span>'}</td>
       <td><button class="btn btn-secondary btn-small edit-emp-btn" data-id="${e.id}">עריכה</button></td>
       <td><button class="btn btn-danger btn-small delete-emp-btn" data-id="${e.id}">מחיקה</button></td>
-    </tr>`).join('') : `<tr class="empty-row"><td colspan="6">${employeeFilter === 'active' ? 'אין עובדים פעילים' : 'אין עובדים לא פעילים'}</td></tr>`;
+    </tr>`).join('') : `<tr class="empty-row"><td colspan="7">${employeeFilter === 'active' ? 'אין עובדים פעילים' : 'אין עובדים לא פעילים'}</td></tr>`;
 
   tbody.querySelectorAll('.edit-emp-btn').forEach(btn => btn.addEventListener('click', () => openEditEmp(btn.dataset.id)));
   tbody.querySelectorAll('.delete-emp-btn').forEach(btn => btn.addEventListener('click', () => deleteEmp(btn.dataset.id)));
@@ -403,9 +414,11 @@ function resetEmpForm() {
   empForm.reset();
   document.getElementById('emp-id-label').textContent = 'מספר תעודת זהות';
   document.getElementById('emp-submit-btn').textContent = 'שמירה';
+  document.getElementById('emp-password-label').textContent = 'סיסמה לכניסת עובד (לא חובה)';
   ['emp-id-msg', 'emp-first-name-en-msg', 'emp-last-name-en-msg', 'emp-email-msg', 'emp-zip-msg',
-    'emp-mobile-msg', 'emp-start-date-msg', 'emp-end-date-msg'].forEach(clearMsg);
+    'emp-mobile-msg', 'emp-start-date-msg', 'emp-end-date-msg', 'emp-password-msg'].forEach(clearMsg);
 }
+wirePasswordToggle('emp-password', 'emp-password-toggle');
 
 document.getElementById('new-emp-btn').addEventListener('click', () => {
   if (!empForm.classList.contains('hidden') && editingEmpId === null) {
@@ -449,6 +462,8 @@ function openEditEmp(id) {
   }
   if (e.sub_org_id) document.getElementById('emp-sub-org').value = e.sub_org_id;
   if (e.agreement_code) document.getElementById('emp-agreement').value = e.agreement_code;
+  document.getElementById('emp-password').value = '';
+  document.getElementById('emp-password-label').textContent = 'סיסמה חדשה (השאירו ריק כדי לא לשנות)';
   document.getElementById('emp-submit-btn').textContent = 'עדכון';
   document.getElementById('emp-form-msg').textContent = '';
   empForm.classList.remove('hidden');
@@ -475,7 +490,9 @@ const EMP_ERROR_MSGS = {
   'invalid Israeli ID number': 'מספר תעודת הזהות אינו תקין',
   'subOrgId is required because this organization has sub-organizations': 'חובה לבחור תת-ארגון',
   'subOrgId does not belong to this organization': 'תת-הארגון אינו שייך לארגון זה',
-  'not authorized for this sub-organization': 'אין הרשאה לתת-הארגון הזה'
+  'not authorized for this sub-organization': 'אין הרשאה לתת-הארגון הזה',
+  'password must be at least 6 characters': 'הסיסמה חייבת להכיל לפחות 6 תווים',
+  'idNumber already exists for another employee in this organization': 'מספר הזיהוי כבר קיים אצל עובד אחר בארגון'
 };
 
 function parseDisplayedDateToIso(inputId) {
@@ -522,7 +539,8 @@ empForm.addEventListener('submit', async (e) => {
     employmentStartDate: startDateIso,
     employmentEndDate: endDateIso,
     subOrgId: subOrgsCache.length ? Number(document.getElementById('emp-sub-org').value) : null,
-    agreementCode: document.getElementById('emp-agreement').value
+    agreementCode: document.getElementById('emp-agreement').value,
+    password: document.getElementById('emp-password').value
   };
   try {
     if (editingEmpId) {

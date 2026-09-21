@@ -7,6 +7,8 @@ const pgSessionStore = require('connect-pg-simple')(session);
 const { pool, init } = require('./db');
 const systemAdminRouter = require('./routes/systemAdmin');
 const orgPortalRouter = require('./routes/orgPortal');
+const employeePortalRouter = require('./routes/employeePortal');
+const { requireEmployee } = require('./auth');
 const {
   ABSENCE_TYPES,
   pad,
@@ -37,10 +39,11 @@ app.use(session({
 
 app.use('/api/system', systemAdminRouter);
 app.use('/api/org', orgPortalRouter);
+app.use('/api/employee', employeePortalRouter);
 
-// Phase 1: single client / single employee, no auth yet.
-const CLIENT_ID = Number(process.env.CLIENT_ID || 1);
-const EMPLOYEE_ID = Number(process.env.EMPLOYEE_ID || 1);
+// Every clock-in/out/absence/sheet route below acts on the logged-in employee's own record -
+// CLIENT_ID/EMPLOYEE_ID are gone, replaced by req.session.employeeOrgId/employeeId.
+app.use(['/api/status', '/api/clock', '/api/absences', '/api/attendance'], requireEmployee);
 
 function asyncHandler(fn) {
   return (req, res, next) => fn(req, res, next).catch(next);
@@ -56,12 +59,12 @@ function monthRange(year, month) {
 // Stored timestamps are UTC while the app deals in local (Israel) calendar dates, so a plain
 // UTC-string range can miss/misfile events near local midnight. Fetch a 1-day-padded UTC window
 // and let callers group/filter by local toDateKey instead of trusting the UTC date boundary.
-async function fetchEventsPadded(startDate, endDate) {
+async function fetchEventsPadded(employeeId, startDate, endDate) {
   const paddedStart = shiftDateStr(startDate, -1);
   const paddedEnd = shiftDateStr(endDate, 1);
   const { rows } = await pool.query(
     'SELECT id, type, ts, source FROM attendance_events WHERE employee_id = $1 AND ts >= $2 AND ts <= $3 ORDER BY ts',
-    [EMPLOYEE_ID, `${paddedStart}T00:00:00.000Z`, `${paddedEnd}T23:59:59.999Z`]
+    [employeeId, `${paddedStart}T00:00:00.000Z`, `${paddedEnd}T23:59:59.999Z`]
   );
   return rows;
 }
@@ -69,7 +72,7 @@ async function fetchEventsPadded(startDate, endDate) {
 app.get('/api/status', asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT type, ts FROM attendance_events WHERE employee_id = $1 ORDER BY ts DESC LIMIT 1',
-    [EMPLOYEE_ID]
+    [req.session.employeeId]
   );
   const last = rows[0] || null;
   res.json({ lastEvent: last, isIn: !!last && last.type === 'in' });
@@ -83,7 +86,7 @@ app.post('/api/clock', asyncHandler(async (req, res) => {
   const ts = nowIso();
   await pool.query(
     'INSERT INTO attendance_events (client_id, employee_id, type, ts, source) VALUES ($1, $2, $3, $4, $5)',
-    [CLIENT_ID, EMPLOYEE_ID, type, ts, 'live']
+    [req.session.employeeOrgId, req.session.employeeId, type, ts, 'live']
   );
   res.json({ lastEvent: { type, ts }, isIn: type === 'in' });
 }));
@@ -94,7 +97,7 @@ app.get('/api/absences', asyncHandler(async (req, res) => {
   const { start, end } = monthRange(year, month);
   const { rows } = await pool.query(
     'SELECT date, type, note FROM absences WHERE employee_id = $1 AND date BETWEEN $2 AND $3 ORDER BY date',
-    [EMPLOYEE_ID, start, end]
+    [req.session.employeeId, start, end]
   );
   res.json(rows);
 }));
@@ -108,13 +111,13 @@ app.post('/api/absences', asyncHandler(async (req, res) => {
     `INSERT INTO absences (client_id, employee_id, date, type, note)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (employee_id, date) DO UPDATE SET type = excluded.type, note = excluded.note`,
-    [CLIENT_ID, EMPLOYEE_ID, date, type, note || null]
+    [req.session.employeeOrgId, req.session.employeeId, date, type, note || null]
   );
   res.json({ ok: true });
 }));
 
 app.delete('/api/absences/:date', asyncHandler(async (req, res) => {
-  await pool.query('DELETE FROM absences WHERE employee_id = $1 AND date = $2', [EMPLOYEE_ID, req.params.date]);
+  await pool.query('DELETE FROM absences WHERE employee_id = $1 AND date = $2', [req.session.employeeId, req.params.date]);
   res.json({ ok: true });
 }));
 
@@ -122,7 +125,7 @@ app.get('/api/attendance/summary', asyncHandler(async (req, res) => {
   const year = Number(req.query.year);
   const month = Number(req.query.month);
   const { start, end } = monthRange(year, month);
-  const events = await fetchEventsPadded(start, end);
+  const events = await fetchEventsPadded(req.session.employeeId, start, end);
 
   const byDay = {};
   for (const ev of events) {
@@ -140,12 +143,12 @@ app.get('/api/attendance/summary', asyncHandler(async (req, res) => {
 app.get('/api/attendance/day', asyncHandler(async (req, res) => {
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date is required' });
-  const events = (await fetchEventsPadded(date, date))
+  const events = (await fetchEventsPadded(req.session.employeeId, date, date))
     .filter((ev) => toDateKey(ev.ts) === date)
     .map((ev) => ({ id: ev.id, type: ev.type, ts: ev.ts, source: ev.source }));
   const { rows } = await pool.query(
     'SELECT type, note FROM absences WHERE employee_id = $1 AND date = $2',
-    [EMPLOYEE_ID, date]
+    [req.session.employeeId, date]
   );
   res.json({ events, absence: rows[0] || null, minutes: computeMinutes(events) });
 }));
@@ -155,7 +158,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
   const month = Number(req.query.month);
   const { start, end } = monthRange(year, month);
 
-  const rawEvents = await fetchEventsPadded(start, end);
+  const rawEvents = await fetchEventsPadded(req.session.employeeId, start, end);
   const byDay = {};
   for (const ev of rawEvents) {
     const key = toDateKey(ev.ts);
@@ -165,7 +168,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
 
   const { rows: absenceRows } = await pool.query(
     'SELECT date, type, note FROM absences WHERE employee_id = $1 AND date BETWEEN $2 AND $3',
-    [EMPLOYEE_ID, start, end]
+    [req.session.employeeId, start, end]
   );
   const absenceMap = {};
   absenceRows.forEach((a) => { absenceMap[a.date] = a; });
@@ -217,7 +220,7 @@ app.post('/api/attendance/manual', asyncHandler(async (req, res) => {
   const ts = new Date(`${date}T${time}:00`).toISOString();
   const { rows } = await pool.query(
     'INSERT INTO attendance_events (client_id, employee_id, type, ts, source) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-    [CLIENT_ID, EMPLOYEE_ID, type, ts, 'manual']
+    [req.session.employeeOrgId, req.session.employeeId, type, ts, 'manual']
   );
   res.json({ id: rows[0].id, type, ts });
 }));
@@ -227,7 +230,7 @@ app.put('/api/attendance/event/:id', asyncHandler(async (req, res) => {
   if (!time) return res.status(400).json({ error: 'time is required' });
   const { rows } = await pool.query(
     'SELECT ts FROM attendance_events WHERE id = $1 AND employee_id = $2',
-    [Number(req.params.id), EMPLOYEE_ID]
+    [Number(req.params.id), req.session.employeeId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'not found' });
   const dateKey = toDateKey(rows[0].ts);
@@ -239,18 +242,18 @@ app.put('/api/attendance/event/:id', asyncHandler(async (req, res) => {
 app.delete('/api/attendance/event/:id', asyncHandler(async (req, res) => {
   await pool.query('DELETE FROM attendance_events WHERE id = $1 AND employee_id = $2', [
     Number(req.params.id),
-    EMPLOYEE_ID
+    req.session.employeeId
   ]);
   res.json({ ok: true });
 }));
 
 app.delete('/api/attendance/day/:date/events', asyncHandler(async (req, res) => {
   const date = req.params.date;
-  const ids = (await fetchEventsPadded(date, date))
+  const ids = (await fetchEventsPadded(req.session.employeeId, date, date))
     .filter((ev) => toDateKey(ev.ts) === date)
     .map((ev) => ev.id);
   if (ids.length) {
-    await pool.query('DELETE FROM attendance_events WHERE employee_id = $1 AND id = ANY($2::int[])', [EMPLOYEE_ID, ids]);
+    await pool.query('DELETE FROM attendance_events WHERE employee_id = $1 AND id = ANY($2::int[])', [req.session.employeeId, ids]);
   }
   res.json({ ok: true, deleted: ids.length });
 }));

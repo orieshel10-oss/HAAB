@@ -25,6 +25,7 @@ async function api(path, options) {
     headers: { 'Content-Type': 'application/json' },
     ...options
   });
+  if (res.status === 401) { showAuthGate(); throw new Error('not authenticated'); }
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.status === 204 ? null : res.json();
 }
@@ -363,8 +364,117 @@ function minutesToLabel(minutes) {
   return `${h}:${pad(m)}`;
 }
 
+/* ---------- auth: org selection + employee login ---------- */
+const ORG_CODE_STORAGE_KEY = 'haab_org_code';
+
+function showOrgLoginBranding(org) {
+  document.getElementById('employee-login-org-name').textContent = org.name;
+  const logoImg = document.getElementById('employee-login-org-logo');
+  if (org.logoDataUrl) {
+    logoImg.src = org.logoDataUrl;
+    logoImg.classList.remove('hidden');
+  } else {
+    logoImg.classList.add('hidden');
+  }
+}
+
+// Re-entry point whenever we're not authenticated (cold start with no session, or a 401 from
+// any API call mid-use e.g. an expired session) - decides between the org-select screen and the
+// login screen based on whether an org code is already remembered on this device.
+async function showAuthGate() {
+  const savedCode = localStorage.getItem(ORG_CODE_STORAGE_KEY);
+  if (!savedCode) {
+    showScreen('org-select');
+    return;
+  }
+  try {
+    const res = await fetch(`/api/employee/organizations/${savedCode}`);
+    if (!res.ok) throw new Error('org lookup failed');
+    showOrgLoginBranding(await res.json());
+    showScreen('employee-login');
+  } catch (e) {
+    // The remembered org code no longer resolves (e.g. deleted) - fall back to org-select
+    // rather than getting stuck showing a login form with no branding.
+    localStorage.removeItem(ORG_CODE_STORAGE_KEY);
+    showScreen('org-select');
+  }
+}
+
+const orgSelectForm = document.getElementById('org-select-form');
+orgSelectForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('org-select-msg');
+  msg.textContent = '';
+  const code = document.getElementById('org-select-code').value.trim();
+  try {
+    const res = await fetch(`/api/employee/organizations/${code}`);
+    if (!res.ok) { msg.textContent = 'קוד ארגון לא נמצא'; return; }
+    const org = await res.json();
+    localStorage.setItem(ORG_CODE_STORAGE_KEY, code);
+    showOrgLoginBranding(org);
+    showScreen('employee-login');
+  } catch (e2) {
+    msg.textContent = 'שגיאת תקשורת - נסו שוב';
+  }
+});
+
+const employeeLoginForm = document.getElementById('employee-login-form');
+employeeLoginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('employee-login-msg');
+  msg.textContent = '';
+  const orgCode = localStorage.getItem(ORG_CODE_STORAGE_KEY);
+  const idNumber = document.getElementById('employee-login-id').value.trim();
+  const password = document.getElementById('employee-login-password').value;
+  try {
+    const res = await fetch('/api/employee/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgCode, idNumber, password })
+    });
+    if (!res.ok) { msg.textContent = 'פרטי התחברות שגויים'; return; }
+    employeeLoginForm.reset();
+    showScreen('home');
+    refreshStatus();
+  } catch (e2) {
+    msg.textContent = 'שגיאת תקשורת - נסו שוב';
+  }
+});
+
+document.getElementById('employee-login-password-toggle').addEventListener('click', () => {
+  const input = document.getElementById('employee-login-password');
+  const btn = document.getElementById('employee-login-password-toggle');
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? '🙈' : '👁';
+});
+
+document.getElementById('change-org-btn').addEventListener('click', () => {
+  localStorage.removeItem(ORG_CODE_STORAGE_KEY);
+  document.getElementById('org-select-code').value = '';
+  document.getElementById('org-select-msg').textContent = '';
+  showScreen('org-select');
+});
+
+document.getElementById('employee-logout-btn').addEventListener('click', async () => {
+  await fetch('/api/employee/logout', { method: 'POST' });
+  showAuthGate();
+});
+
 /* ---------- init ---------- */
-refreshStatus();
+(async () => {
+  try {
+    const res = await fetch('/api/employee/me');
+    if (res.ok) {
+      showScreen('home');
+      refreshStatus();
+    } else {
+      await showAuthGate();
+    }
+  } catch (e) {
+    await showAuthGate();
+  }
+})();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
