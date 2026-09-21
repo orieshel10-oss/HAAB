@@ -24,6 +24,15 @@
         <h2>חגים</h2>
         <button class="btn btn-primary btn-small" id="new-holiday-btn">+ חג</button>
       </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:3px;">סינון לפי דת</label>
+        <select id="hol-calendar-filter">
+          <option value="">הכל</option>
+          <option value="jewish">יהודי</option>
+          <option value="christian">נוצרי</option>
+          <option value="muslim">מוסלמי</option>
+        </select>
+      </div>
       <table class="admin-table">
         <thead><tr><th>תאריך</th><th>לוח</th><th>שם</th><th></th></tr></thead>
         <tbody id="holidays-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
@@ -122,8 +131,10 @@ wireDateField('spec-date', 'spec-date-msg');
 const CAL_LABELS = { jewish: 'יהודי', christian: 'נוצרי', muslim: 'מוסלמי' };
 
 /* ---------- holidays ---------- */
-async function loadHolidays() {
-  const rows = await api('/api/system/holidays');
+let holidaysCache = [];
+function renderHolidays() {
+  const filter = document.getElementById('hol-calendar-filter').value;
+  const rows = filter ? holidaysCache.filter(h => h.calendar_type === filter) : holidaysCache;
   const tbody = document.getElementById('holidays-tbody');
   tbody.innerHTML = rows.length ? rows.map(h => `
     <tr>
@@ -131,12 +142,17 @@ async function loadHolidays() {
       <td>${CAL_LABELS[h.calendar_type]}</td>
       <td>${h.name}</td>
       <td><button class="btn btn-danger btn-small del-hol-btn" data-id="${h.id}">מחיקה</button></td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין עדיין חגים</td></tr>';
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין חגים להצגה</td></tr>';
   tbody.querySelectorAll('.del-hol-btn').forEach(btn => btn.addEventListener('click', async () => {
     await api(`/api/system/holidays/${btn.dataset.id}`, { method: 'DELETE' });
     loadHolidays();
   }));
 }
+async function loadHolidays() {
+  holidaysCache = await api('/api/system/holidays');
+  renderHolidays();
+}
+document.getElementById('hol-calendar-filter').addEventListener('change', renderHolidays);
 const holidayForm = document.getElementById('holiday-form');
 document.getElementById('new-holiday-btn').addEventListener('click', () => holidayForm.classList.toggle('hidden'));
 document.getElementById('holiday-cancel-btn').addEventListener('click', () => { holidayForm.reset(); holidayForm.classList.add('hidden'); });

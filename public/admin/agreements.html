@@ -35,6 +35,10 @@
           <div><label>שם ההסכם (עד 20 תווים)</label><input id="agr-name" maxlength="20" required /></div>
         </div>
         <div><label>תיאור (לא חובה)</label><textarea id="agr-desc"></textarea></div>
+        <div>
+          <label>הגדרת ההסכם - טקסט חופשי (ישמש בעתיד לניתוח נוכחות)</label>
+          <textarea id="agr-prompt" maxlength="4000" rows="4"></textarea>
+        </div>
         <div class="form-row">
           <div><label>תקן יום רגיל (HH:MM)</label><input id="agr-day-standard" placeholder="08:00" required /></div>
           <div><label>תקן יום מקוצר (HH:MM)</label><input id="agr-short-standard" placeholder="07:00" required /></div>
@@ -149,6 +153,7 @@ function openEditAgr(code) {
   document.getElementById('agr-code').disabled = true;
   document.getElementById('agr-name').value = a.name;
   document.getElementById('agr-desc').value = a.description || '';
+  document.getElementById('agr-prompt').value = a.prompt_text || '';
   document.getElementById('agr-day-standard').value = minutesToHHMM(a.day_standard_minutes);
   document.getElementById('agr-short-standard').value = minutesToHHMM(a.shortened_day_standard_minutes);
   document.getElementById('agr-rest-day').value = a.weekly_rest_day;
@@ -182,6 +187,7 @@ agrForm.addEventListener('submit', async (e) => {
   const body = {
     name: document.getElementById('agr-name').value.trim(),
     description: document.getElementById('agr-desc').value.trim(),
+    promptText: document.getElementById('agr-prompt').value.trim(),
     dayStandardMinutes, shortenedDayStandardMinutes,
     weeklyRestDay: Number(document.getElementById('agr-rest-day').value),
     workdaysPerWeek: Number(document.getElementById('agr-workdays').value),

@@ -140,10 +140,7 @@ async function api(path, options) {
   return data;
 }
 
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  await api('/api/system/logout', { method: 'POST' });
-  window.location.href = 'login.html';
-});
+document.getElementById('logout-btn').addEventListener('click', confirmSystemLogout);
 
 /* ---------- organizations ---------- */
 let orgsCache = [];
@@ -268,7 +265,7 @@ document.getElementById('enter-org-confirm').addEventListener('click', async () 
       method: 'POST',
       body: JSON.stringify({ password: document.getElementById('enter-org-password').value })
     });
-    window.location.href = `organization.html?id=${enterOrgId}`;
+    window.location.href = 'organization.html';
   } catch (err) {
     msg.textContent = 'סיסמה שגויה';
   }

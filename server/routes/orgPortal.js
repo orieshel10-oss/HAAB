@@ -1,7 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { verifyPassword, verifyTotpCode, isValidIsraeliId, resolveOrgContext } = require('../auth');
-const { updateOrgAdmin, deleteOrgAdmin } = require('../orgAdmins');
+const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin } = require('../orgAdmins');
 
 const router = express.Router();
 
@@ -47,7 +47,7 @@ router.use(resolveOrgContext);
 
 router.get('/me', asyncHandler(async (req, res) => {
   const { orgId, role, subOrgRestriction } = req.orgContext;
-  const orgRes = await pool.query('SELECT name, org_code FROM organizations WHERE id = $1', [orgId]);
+  const orgRes = await pool.query('SELECT name, org_code, logo_data_url FROM organizations WHERE id = $1', [orgId]);
   let adminName = null;
   if (req.session.orgAdminId) {
     const adminRes = await pool.query('SELECT name, email FROM org_admins WHERE id = $1', [req.session.orgAdminId]);
@@ -57,6 +57,7 @@ router.get('/me', asyncHandler(async (req, res) => {
     orgId, role, subOrgRestriction,
     orgName: orgRes.rows[0] ? orgRes.rows[0].name : null,
     orgCode: orgRes.rows[0] ? orgRes.rows[0].org_code : null,
+    orgLogoDataUrl: orgRes.rows[0] ? orgRes.rows[0].logo_data_url : null,
     adminName
   });
 }));
@@ -166,7 +167,10 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   if (employmentEndDate && !ISO_DATE_RE.test(employmentEndDate)) return { status: 400, error: 'invalid employmentEndDate' };
   if (!agreementCode) return { status: 400, error: 'agreementCode is required' };
   const whitelisted = await pool.query(
-    'SELECT 1 FROM org_attendance_agreements WHERE org_id = $1 AND agreement_code = $2',
+    `SELECT 1 FROM org_attendance_agreements
+     WHERE org_id = $1 AND agreement_code = $2
+       AND (effective_from IS NULL OR effective_from <= to_char(now(), 'YYYY-MM-DD'))
+       AND (effective_until IS NULL OR effective_until >= to_char(now(), 'YYYY-MM-DD'))`,
     [orgId, agreementCode]
   );
   if (!whitelisted.rows[0]) return { status: 400, error: 'agreementCode is not enabled for this organization' };
@@ -265,27 +269,40 @@ router.delete('/employees/:id', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/* ---------- time admins (Org Admin's own management scope) ---------- */
-// System Admin can also reach these via /api/system/organizations/:orgId/admins/:id, which has
-// no type restriction. This endpoint is specifically for an Org Admin managing the time_admin
-// rows in their own org (per spec) - it can never touch/create an org_admin-type row.
+/* ---------- org admins / time admins (this org's own management scope) ---------- */
+// System Admin (in-org) sees/manages both admin_type values; Org Admin is restricted to
+// time_admin rows only (per spec: Org Admin "defines" Time Admins, never other Org Admins).
+// Time Admin has no access to this area at all.
 
-router.put('/time-admins/:id', asyncHandler(async (req, res) => {
+router.get('/admins', asyncHandler(async (req, res) => {
   const { orgId, role } = req.orgContext;
-  if (role !== 'system_admin' && role !== 'org_admin') return res.status(403).json({ error: 'not authorized' });
-  const current = await pool.query('SELECT admin_type FROM org_admins WHERE id = $1 AND org_id = $2', [req.params.id, orgId]);
-  if (!current.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (current.rows[0].admin_type !== 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  res.json(await listOrgAdmins(orgId));
+}));
 
-  const result = await updateOrgAdmin(orgId, req.params.id, { ...req.body, adminType: 'time_admin' });
+router.post('/admins', asyncHandler(async (req, res) => {
+  const { orgId, role } = req.orgContext;
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  const restrictToType = role === 'org_admin' ? 'time_admin' : undefined;
+  const result = await createOrgAdmin(orgId, req.body || {}, restrictToType);
   if (result.error) return res.status(result.status).json({ error: result.error });
   res.json(result.data);
 }));
 
-router.delete('/time-admins/:id', asyncHandler(async (req, res) => {
+router.put('/admins/:id', asyncHandler(async (req, res) => {
   const { orgId, role } = req.orgContext;
-  if (role !== 'system_admin' && role !== 'org_admin') return res.status(403).json({ error: 'not authorized' });
-  const result = await deleteOrgAdmin(orgId, req.params.id, 'time_admin');
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  const restrictToType = role === 'org_admin' ? 'time_admin' : undefined;
+  const result = await updateOrgAdmin(orgId, req.params.id, req.body || {}, restrictToType);
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result.data);
+}));
+
+router.delete('/admins/:id', asyncHandler(async (req, res) => {
+  const { orgId, role } = req.orgContext;
+  if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  const restrictToType = role === 'org_admin' ? 'time_admin' : undefined;
+  const result = await deleteOrgAdmin(orgId, req.params.id, restrictToType);
   if (result.error) return res.status(result.status).json({ error: result.error });
   res.json(result.data);
 }));
@@ -293,24 +310,42 @@ router.delete('/time-admins/:id', asyncHandler(async (req, res) => {
 /* ---------- attendance agreements (org whitelist) ---------- */
 // Read-only browsing of the full catalog is fine for any role (Time Admin included, since they
 // need to see an employee's assigned agreement); toggling the whitelist is System Admin / Org
-// Admin only, same guard style as the time-admin routes above.
+// Admin only, same guard style as the admin-management routes above.
 
 router.get('/agreements', asyncHandler(async (req, res) => {
   const { orgId } = req.orgContext;
   const { rows: catalog } = await pool.query('SELECT * FROM attendance_agreements ORDER BY name');
-  const { rows: enabledRows } = await pool.query('SELECT agreement_code FROM org_attendance_agreements WHERE org_id = $1', [orgId]);
-  const enabledSet = new Set(enabledRows.map((r) => r.agreement_code));
-  res.json(catalog.map((a) => ({ ...a, enabled: enabledSet.has(a.code) })));
+  const { rows: whitelistRows } = await pool.query(
+    'SELECT agreement_code, effective_from, effective_until FROM org_attendance_agreements WHERE org_id = $1',
+    [orgId]
+  );
+  const byCode = {};
+  whitelistRows.forEach((r) => { byCode[r.agreement_code] = r; });
+  res.json(catalog.map((a) => ({
+    ...a,
+    effectiveFrom: byCode[a.code] ? byCode[a.code].effective_from : null,
+    effectiveUntil: byCode[a.code] ? byCode[a.code].effective_until : null,
+    whitelisted: Boolean(byCode[a.code])
+  })));
 }));
 
-router.post('/agreements/:code', asyncHandler(async (req, res) => {
+router.put('/agreements/:code', asyncHandler(async (req, res) => {
   const { orgId, role } = req.orgContext;
   if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
+  const { effectiveFrom, effectiveUntil } = req.body || {};
+  const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if (effectiveFrom && !ISO_DATE_RE.test(effectiveFrom)) return res.status(400).json({ error: 'invalid effectiveFrom' });
+  if (effectiveUntil && !ISO_DATE_RE.test(effectiveUntil)) return res.status(400).json({ error: 'invalid effectiveUntil' });
+  if (effectiveFrom && effectiveUntil && effectiveFrom > effectiveUntil) {
+    return res.status(400).json({ error: 'effectiveFrom must be on or before effectiveUntil' });
+  }
   const agreement = await pool.query('SELECT code FROM attendance_agreements WHERE code = $1', [req.params.code]);
   if (!agreement.rows[0]) return res.status(404).json({ error: 'not found' });
   await pool.query(
-    'INSERT INTO org_attendance_agreements (org_id, agreement_code) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-    [orgId, req.params.code]
+    `INSERT INTO org_attendance_agreements (org_id, agreement_code, effective_from, effective_until)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (org_id, agreement_code) DO UPDATE SET effective_from = $3, effective_until = $4`,
+    [orgId, req.params.code, effectiveFrom || null, effectiveUntil || null]
   );
   res.json({ ok: true });
 }));

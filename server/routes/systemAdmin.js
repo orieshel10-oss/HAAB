@@ -8,7 +8,7 @@ const {
   verifyTotpCode,
   requireSystemAdmin
 } = require('../auth');
-const { updateOrgAdmin, deleteOrgAdmin, ADMIN_TYPES } = require('../orgAdmins');
+const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin, ADMIN_TYPES } = require('../orgAdmins');
 
 const router = express.Router();
 
@@ -169,6 +169,25 @@ router.post('/organizations/:id/enter', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+const LOGO_DATA_URL_RE = /^data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/;
+const LOGO_MAX_LENGTH = 400 * 1024; // ~400KB of base64 text, plenty for a small logo
+
+router.put('/organizations/:id/logo', asyncHandler(async (req, res) => {
+  const orgId = Number(req.params.id);
+  const { logoDataUrl } = req.body || {};
+  if (logoDataUrl !== null && logoDataUrl !== undefined) {
+    if (typeof logoDataUrl !== 'string' || !LOGO_DATA_URL_RE.test(logoDataUrl) || logoDataUrl.length > LOGO_MAX_LENGTH) {
+      return res.status(400).json({ error: 'invalid or oversized logo image' });
+    }
+  }
+  const { rows } = await pool.query(
+    'UPDATE organizations SET logo_data_url = $1 WHERE id = $2 RETURNING id',
+    [logoDataUrl || null, orgId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+}));
+
 /* ---------- sub-organizations ---------- */
 
 router.get('/organizations/:id/sub-organizations', asyncHandler(async (req, res) => {
@@ -266,87 +285,13 @@ router.delete('/organizations/:orgId/sub-organizations/:id', asyncHandler(async 
 /* ---------- org admins / time admins ---------- */
 
 router.get('/organizations/:id/admins', asyncHandler(async (req, res) => {
-  const orgId = Number(req.params.id);
-  const { rows: admins } = await pool.query(
-    `SELECT id, email, name, admin_type, created_at FROM org_admins WHERE org_id = $1 ORDER BY created_at DESC`,
-    [orgId]
-  );
-  const { rows: subOrgLinks } = await pool.query(
-    `SELECT oas.org_admin_id, so.id AS sub_org_id, so.sub_org_code, so.name
-     FROM org_admin_sub_orgs oas
-     JOIN sub_organizations so ON so.id = oas.sub_org_id
-     WHERE oas.org_admin_id = ANY($1::int[])`,
-    [admins.map((a) => a.id)]
-  );
-  const byAdmin = {};
-  subOrgLinks.forEach((l) => { (byAdmin[l.org_admin_id] = byAdmin[l.org_admin_id] || []).push({ id: l.sub_org_id, code: l.sub_org_code, name: l.name }); });
-  res.json(admins.map((a) => ({ ...a, subOrganizations: byAdmin[a.id] || [] })));
+  res.json(await listOrgAdmins(Number(req.params.id)));
 }));
 
 router.post('/organizations/:id/admins', asyncHandler(async (req, res) => {
-  const orgId = Number(req.params.id);
-  const { email, name, password, adminType, subOrgIds } = req.body || {};
-
-  if (!email || !name || !password) {
-    return res.status(400).json({ error: 'email, name and password are required' });
-  }
-  if (!ADMIN_TYPES.includes(adminType)) {
-    return res.status(400).json({ error: `adminType must be one of ${ADMIN_TYPES.join(', ')}` });
-  }
-  if (adminType === 'time_admin' && (!Array.isArray(subOrgIds) || subOrgIds.length === 0)) {
-    return res.status(400).json({ error: 'time_admin requires at least one sub-organization in subOrgIds' });
-  }
-
-  const passwordHash = await hashPassword(password);
-  const totpSecret = generateTotpSecret();
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    let created;
-    try {
-      const { rows } = await client.query(
-        `INSERT INTO org_admins (org_id, email, name, password_hash, totp_secret, admin_type)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, email, name, admin_type`,
-        [orgId, email, name, passwordHash, totpSecret, adminType]
-      );
-      created = rows[0];
-    } catch (err) {
-      if (err.code === '23505') {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'this email is already an admin for this organization' });
-      }
-      throw err;
-    }
-
-    if (adminType === 'time_admin') {
-      const validSubOrgs = await client.query(
-        'SELECT id FROM sub_organizations WHERE org_id = $1 AND id = ANY($2::int[])',
-        [orgId, subOrgIds]
-      );
-      if (validSubOrgs.rows.length !== subOrgIds.length) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'one or more subOrgIds do not belong to this organization' });
-      }
-      for (const subOrgId of subOrgIds) {
-        await client.query(
-          'INSERT INTO org_admin_sub_orgs (org_admin_id, sub_org_id) VALUES ($1, $2)',
-          [created.id, subOrgId]
-        );
-      }
-    }
-
-    await client.query('COMMIT');
-    // Label includes role + org code: the same email can end up as a System Admin AND an Org/Time
-    // Admin (or an admin in more than one org), and without this the entries look identical in
-    // an authenticator app - easy to enroll the wrong one and get "invalid code" forever after.
-    const orgRow = await pool.query('SELECT org_code FROM organizations WHERE id = $1', [orgId]);
-    const roleLabel = adminType === 'time_admin' ? 'Time Admin' : 'Org Admin';
-    const label = `${email} (${roleLabel} ${orgRow.rows[0] ? orgRow.rows[0].org_code : orgId})`;
-    res.json({ ...created, totpEnrollUri: totpEnrollUri(totpSecret, label) });
-  } finally {
-    client.release();
-  }
+  const result = await createOrgAdmin(Number(req.params.id), req.body || {});
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result.data);
 }));
 
 // Edit/delete for an org_admin row is System-Admin-only; for a time_admin row the spec also
@@ -447,7 +392,8 @@ function validateAgreementBody(body) {
   if (!Number.isInteger(weeklyRestDay) || weeklyRestDay < 0 || weeklyRestDay > 6) return { status: 400, error: 'weeklyRestDay must be 0-6' };
   if (!Number.isInteger(workdaysPerWeek) || workdaysPerWeek < 1 || workdaysPerWeek > 7) return { status: 400, error: 'workdaysPerWeek must be 1-7' };
   if (!HOLIDAY_CALENDARS.includes(holidayCalendar)) return { status: 400, error: `holidayCalendar must be one of ${HOLIDAY_CALENDARS.join(', ')}` };
-  return { data: { code, name, description: body.description || null, dayStandardMinutes, shortenedDayStandardMinutes, weeklyRestDay, workdaysPerWeek, holidayCalendar } };
+  if (body.promptText && body.promptText.length > 4000) return { status: 400, error: 'promptText must be at most 4000 characters' };
+  return { data: { code, name, description: body.description || null, dayStandardMinutes, shortenedDayStandardMinutes, weeklyRestDay, workdaysPerWeek, holidayCalendar, promptText: body.promptText || null } };
 }
 
 router.post('/agreements', asyncHandler(async (req, res) => {
@@ -457,9 +403,9 @@ router.post('/agreements', asyncHandler(async (req, res) => {
   try {
     const { rows } = await pool.query(
       `INSERT INTO attendance_agreements
-         (code, name, description, day_standard_minutes, shortened_day_standard_minutes, weekly_rest_day, workdays_per_week, holiday_calendar, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [d.code, d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, req.session.systemAdminId]
+         (code, name, description, day_standard_minutes, shortened_day_standard_minutes, weekly_rest_day, workdays_per_week, holiday_calendar, prompt_text, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [d.code, d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, d.promptText, req.session.systemAdminId]
     );
     res.json(rows[0]);
   } catch (err) {
@@ -474,9 +420,9 @@ router.put('/agreements/:code', asyncHandler(async (req, res) => {
   const d = validation.data;
   const { rows } = await pool.query(
     `UPDATE attendance_agreements SET name=$1, description=$2, day_standard_minutes=$3,
-       shortened_day_standard_minutes=$4, weekly_rest_day=$5, workdays_per_week=$6, holiday_calendar=$7
-     WHERE code = $8 RETURNING *`,
-    [d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, req.params.code]
+       shortened_day_standard_minutes=$4, weekly_rest_day=$5, workdays_per_week=$6, holiday_calendar=$7, prompt_text=$8
+     WHERE code = $9 RETURNING *`,
+    [d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, d.promptText, req.params.code]
   );
   if (!rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(rows[0]);

@@ -12,16 +12,9 @@
 </head>
 <body>
 <div class="admin-wrap">
-  <header class="admin-header">
-    <img src="../icons/icon-192.png" alt="HAAB" />
-    <h1 id="org-title">עובדים</h1>
-    <a href="org-agreements.html" id="agreements-link" class="hidden">הסכמים מאושרים</a>
-    <a href="#" id="back-link" class="hidden">חזרה לניהול הארגון</a>
-    <button id="logout-btn">יציאה</button>
-  </header>
+  <div id="org-header-root"></div>
 
   <div class="admin-content">
-    <div class="role-badge" id="role-badge"></div>
 
     <section class="admin-section">
       <div class="admin-section-head">
@@ -160,22 +153,11 @@ function restrictInput(inputId, allowedCharRe, msgId, msgText) {
   });
 }
 
-const ROLE_LABELS = { system_admin: 'System Admin', org_admin: 'Org Admin', time_admin: 'Time Admin' };
 let me = null;
 let empsCache = [];
 let subOrgsCache = [];
 let editingEmpId = null;
 let employeeFilter = 'active';
-
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  if (me.role === 'system_admin') {
-    await api('/api/system/logout', { method: 'POST' });
-    window.location.href = 'login.html';
-  } else {
-    await api('/api/org/logout', { method: 'POST' });
-    window.location.href = 'org-login.html';
-  }
-});
 
 document.getElementById('toggle-inactive-btn').addEventListener('click', () => {
   employeeFilter = employeeFilter === 'active' ? 'inactive' : 'active';
@@ -386,7 +368,10 @@ async function loadSubOrgs() {
 let agreementsCache = [];
 async function loadAgreements() {
   const all = await api('/api/org/agreements');
-  agreementsCache = all.filter(a => a.enabled);
+  const today = new Date().toISOString().slice(0, 10);
+  agreementsCache = all.filter(a => a.whitelisted
+    && (!a.effectiveFrom || a.effectiveFrom <= today)
+    && (!a.effectiveUntil || a.effectiveUntil >= today));
   const select = document.getElementById('emp-agreement');
   select.innerHTML = agreementsCache.map(a => `<option value="${a.code}">${a.name} (${a.code})</option>`).join('')
     || '<option value="">אין הסכמים מאושרים לארגון זה</option>';
@@ -565,14 +550,7 @@ async function deleteEmp(id) {
 /* ---------- init ---------- */
 api('/api/org/me').then(async (data) => {
   me = data;
-  document.getElementById('org-title').textContent = me.orgName ? `${me.orgName} (${me.orgCode})` : 'עובדים';
-  document.getElementById('role-badge').textContent = ROLE_LABELS[me.role] + (me.adminName ? ' — ' + me.adminName : '');
-  if (me.role === 'system_admin') {
-    const backLink = document.getElementById('back-link');
-    backLink.href = `organization.html?id=${me.orgId}`;
-    backLink.classList.remove('hidden');
-  }
-  document.getElementById('agreements-link').classList.toggle('hidden', me.role === 'time_admin');
+  renderOrgHeader({ me, active: 'employees' });
   await loadSubOrgs();
   await loadAgreements();
   await loadEmployees();

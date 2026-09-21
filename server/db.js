@@ -36,6 +36,7 @@ async function init() {
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_mobile TEXT;
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS payment_card_last4 TEXT;
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS payment_card_holder_name TEXT;
+    ALTER TABLE organizations ADD COLUMN IF NOT EXISTS logo_data_url TEXT;
     -- Superseded: entering an org now re-checks the System Admin's own login password
     -- (step-up auth) instead of a separate per-org secret.
     ALTER TABLE organizations DROP COLUMN IF EXISTS org_entry_password_hash;
@@ -131,13 +132,20 @@ async function init() {
       created_by INTEGER REFERENCES system_admins(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    -- Free-text field stored alongside the structured fields for Phase 4's AI conversational
+    -- flow to consume later - not processed/analyzed yet, just captured.
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS prompt_text TEXT;
 
     -- Whitelist: which catalog agreements a given org may actually assign to its employees.
+    -- effective_from/effective_until (nullable) further restrict *when* within that whitelisting
+    -- the agreement can actually be assigned to an employee - both null means no restriction.
     CREATE TABLE IF NOT EXISTS org_attendance_agreements (
       org_id INTEGER NOT NULL REFERENCES organizations(id),
       agreement_code TEXT NOT NULL REFERENCES attendance_agreements(code),
       PRIMARY KEY (org_id, agreement_code)
     );
+    ALTER TABLE org_attendance_agreements ADD COLUMN IF NOT EXISTS effective_from TEXT;
+    ALTER TABLE org_attendance_agreements ADD COLUMN IF NOT EXISTS effective_until TEXT;
 
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS agreement_code TEXT REFERENCES attendance_agreements(code);
 

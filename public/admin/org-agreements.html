@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>HAAB - הסכמים מאושרים לארגון</title>
+<title>HAAB - הסכמים בארגון</title>
 <meta name="theme-color" content="#2f6fed" />
 <link rel="icon" href="../icons/icon-192.png" />
 <link rel="stylesheet" href="../styles.css" />
@@ -12,25 +12,19 @@
 </head>
 <body>
 <div class="admin-wrap">
-  <header class="admin-header">
-    <img src="../icons/icon-192.png" alt="HAAB" />
-    <h1 id="org-title">הסכמים מאושרים</h1>
-    <a href="#" id="back-link" class="hidden">חזרה</a>
-    <button id="logout-btn">יציאה</button>
-  </header>
+  <div id="org-header-root"></div>
 
   <div class="admin-content">
-    <div class="role-badge" id="role-badge"></div>
     <section class="admin-section">
       <div class="admin-section-head">
         <h2>הסכמי נוכחות</h2>
       </div>
       <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px;">
-        סמנו אילו הסכמים מתוך קטלוג המוצר מותרים לשיוך לעובדים בארגון זה.
+        לכל הסכם מקטלוג המוצר ניתן להגדיר תחילת ותאריך סיום תוקף לשיוך בארגון זה. השארת השדות ריקים משמעה תוקף ללא הגבלת זמן.
       </p>
       <table class="admin-table">
-        <thead><tr><th>מאושר</th><th>קוד</th><th>שם</th><th>תקן יום</th></tr></thead>
-        <tbody id="agr-tbody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+        <thead><tr><th>קוד</th><th>שם</th><th>תקן יום</th><th>תחילת תוקף</th><th>סיום תוקף</th><th></th></tr></thead>
+        <tbody id="agr-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
       </table>
     </section>
   </div>
@@ -41,47 +35,107 @@ async function api(path, options) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   if (res.status === 401) { window.location.href = 'org-login.html'; throw new Error('not authenticated'); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'error');
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
-const ROLE_LABELS = { system_admin: 'System Admin', org_admin: 'Org Admin', time_admin: 'Time Admin' };
 function minutesToHHMM(m) { return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; }
 
-let me = null;
+// Same freeform date parser used in employees.html/calendars.html - kept local since these are
+// separate, independently-loaded pages with no bundler to share a module through.
+function parseFreeformDate(raw) {
+  const s = (raw || '').trim();
+  if (!s) return { empty: true };
+  let day, month, year;
+  let m = s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2}|\d{4})$/);
+  if (m) { [, day, month, year] = m; }
+  else if (/^\d{8}$/.test(s)) { day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 8); }
+  else if (/^\d{6}$/.test(s)) { day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 6); }
+  else return null;
+  day = Number(day); month = Number(month); year = Number(year);
+  if (year < 100) year += 2000;
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return { day, month, year };
+}
+function formatDDMMYYYY({ day, month, year }) { return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`; }
+function toIsoDate({ day, month, year }) { return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }
+function fromIsoDate(iso) {
+  if (!iso) return '';
+  const [year, month, day] = iso.split('-').map(Number);
+  return formatDDMMYYYY({ day, month, year });
+}
 
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  if (me.role === 'system_admin') {
-    await api('/api/system/logout', { method: 'POST' });
-    window.location.href = 'login.html';
-  } else {
-    await api('/api/org/logout', { method: 'POST' });
-    window.location.href = 'org-login.html';
-  }
-});
+let me = null;
 
 async function loadAgreements() {
   const agreements = await api('/api/org/agreements');
   const readOnly = me.role === 'time_admin';
   const tbody = document.getElementById('agr-tbody');
   tbody.innerHTML = agreements.length ? agreements.map(a => `
-    <tr>
-      <td><input type="checkbox" class="agr-toggle" data-code="${a.code}" ${a.enabled ? 'checked' : ''} ${readOnly ? 'disabled' : ''} /></td>
+    <tr data-code="${a.code}">
       <td>${a.code}</td>
       <td>${a.name}</td>
       <td>${minutesToHHMM(a.day_standard_minutes)}</td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="4">אין הסכמים בקטלוג המוצר</td></tr>';
+      <td>${readOnly
+        ? (fromIsoDate(a.effectiveFrom) || '-')
+        : `<input class="agr-from" placeholder="DD/MM/YYYY" inputmode="numeric" value="${fromIsoDate(a.effectiveFrom)}" style="width:110px" />`}</td>
+      <td>${readOnly
+        ? (fromIsoDate(a.effectiveUntil) || '-')
+        : `<input class="agr-until" placeholder="DD/MM/YYYY" inputmode="numeric" value="${fromIsoDate(a.effectiveUntil)}" style="width:110px" />`}</td>
+      <td>
+        ${readOnly ? '' : `
+          <button class="btn btn-primary btn-small agr-save-btn">שמירה</button>
+          ${a.whitelisted ? '<button class="btn btn-danger btn-small agr-remove-btn">הסרה</button>' : ''}
+        `}
+      </td>
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="6">אין הסכמים בקטלוג המוצר</td></tr>';
 
-  tbody.querySelectorAll('.agr-toggle').forEach(cb => {
-    cb.addEventListener('change', async () => {
-      cb.disabled = true;
+  if (readOnly) return;
+
+  tbody.querySelectorAll('.agr-save-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('tr');
+      const code = row.dataset.code;
+      const fromRaw = row.querySelector('.agr-from').value;
+      const untilRaw = row.querySelector('.agr-until').value;
+      const from = parseFreeformDate(fromRaw);
+      const until = parseFreeformDate(untilRaw);
+      if (from === null || until === null) { alert('תאריך לא תקין'); return; }
+      btn.disabled = true;
       try {
-        await api(`/api/org/agreements/${cb.dataset.code}`, { method: cb.checked ? 'POST' : 'DELETE' });
+        await api(`/api/org/agreements/${code}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            effectiveFrom: from.empty ? null : toIsoDate(from),
+            effectiveUntil: until.empty ? null : toIsoDate(until)
+          })
+        });
+        await loadAgreements();
       } catch (err) {
         alert(err.message);
-        cb.checked = !cb.checked;
+        btn.disabled = false;
       }
-      cb.disabled = false;
+    });
+  });
+
+  tbody.querySelectorAll('.agr-remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('tr');
+      const code = row.dataset.code;
+      if (!confirm(`להסיר את ההסכם ${code} מהארגון?`)) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/org/agreements/${code}`, { method: 'DELETE' });
+        await loadAgreements();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
     });
   });
 }
@@ -89,11 +143,7 @@ async function loadAgreements() {
 /* ---------- init ---------- */
 api('/api/org/me').then(async (data) => {
   me = data;
-  document.getElementById('org-title').textContent = me.orgName ? `הסכמים מאושרים — ${me.orgName}` : 'הסכמים מאושרים';
-  document.getElementById('role-badge').textContent = ROLE_LABELS[me.role] + (me.adminName ? ' — ' + me.adminName : '');
-  const backLink = document.getElementById('back-link');
-  backLink.href = me.role === 'system_admin' ? 'organization.html' : 'employees.html';
-  backLink.classList.remove('hidden');
+  renderOrgHeader({ me, active: 'agreements' });
   await loadAgreements();
 });
 </script>
