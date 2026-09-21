@@ -161,6 +161,7 @@ async function init() {
       calendar_type TEXT NOT NULL CHECK (calendar_type IN ('jewish', 'christian', 'muslim')),
       name TEXT NOT NULL
     );
+    ALTER TABLE holidays ADD COLUMN IF NOT EXISTS is_eve BOOLEAN NOT NULL DEFAULT false;
     CREATE INDEX IF NOT EXISTS idx_holidays_date_calendar ON holidays(date, calendar_type);
 
     CREATE TABLE IF NOT EXISTS special_days (

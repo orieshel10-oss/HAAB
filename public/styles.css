@@ -193,7 +193,7 @@ html, body {
 }
 .cal-day {
   position: relative;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 1 / 1.2;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -207,12 +207,14 @@ html, body {
 }
 .cal-day.empty { cursor: default; }
 .cal-day.today { font-weight: 800; box-shadow: inset 0 0 0 2px var(--brand); border-radius: 10px; }
+.cal-day.holiday { background: rgba(47,111,237,0.12); }
 .cal-day .day-dot { width: 6px; height: 6px; border-radius: 50%; background: transparent; margin-bottom: 3px; }
 .cal-day .day-dot.vacation { background: var(--vacation); }
 .cal-day .day-dot.sick { background: var(--sick); }
 .cal-day .day-num { font-size: 14px; }
 .cal-day .day-hours { font-size: 10px; color: var(--text-muted); margin-top: 2px; min-height: 12px; }
 .cal-day.has-hours .day-hours { color: var(--brand-dark); font-weight: 700; }
+.cal-day .day-holiday-label { font-size: 8px; color: var(--brand-dark); font-weight: 700; min-height: 10px; margin-top: 1px; }
 
 .legend { display: flex; gap: 16px; margin-top: 12px; padding-right: 4px; }
 .legend-item { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
@@ -274,20 +276,28 @@ html, body {
   color: var(--text);
   margin-bottom: 14px;
 }
-.whole-day-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 14px;
-  cursor: pointer;
-}
-.whole-day-toggle input { width: 18px; height: 18px; }
-.time-row { display: flex; gap: 12px; margin-bottom: 4px; }
 .time-field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .time-field label { font-size: 12px; color: var(--text-muted); }
 .time-field input[type="time"] { width: 100%; margin: 0; }
+#report-sessions { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.report-session-row { display: flex; gap: 10px; align-items: flex-end; }
+.report-session-remove {
+  border: none;
+  background: rgba(229,72,77,0.12);
+  color: var(--red-dark);
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  font-size: 15px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#report-add-session {
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 10px;
+  font-size: 13px;
+}
 
 /* analyzed sheet table */
 .sheet-table-wrap {
@@ -321,22 +331,22 @@ html, body {
 .sheet-note { font-size: 11px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
 
 /* org-select / employee-login screens */
-.login-brand-main { flex-direction: column; gap: 2px; padding-bottom: 12px; }
-.login-brand-title-group { display: flex; align-items: baseline; gap: 8px; }
-.login-brand-title-group h1 { font-size: 19px; }
-.login-brand-subtitle { font-size: 12px; opacity: 0.85; letter-spacing: 0.5px; }
+.login-brand-main { flex-direction: column; gap: 8px; padding: 22px 16px 18px; }
+.login-brand-logo { width: 52px; height: 52px; border-radius: 14px; }
+.login-brand-title { font-size: 17px; font-weight: 700; letter-spacing: 0.5px; }
 .login-brand-org-row {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 10px 16px;
+  gap: 10px;
+  padding: 16px;
   background: var(--card-bg);
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  color: var(--text-muted);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
 }
-.org-logo-small { width: 20px; height: 20px; border-radius: 6px; background: #fff; padding: 1px; object-fit: cover; }
+.org-logo-small { width: 40px; height: 40px; border-radius: 10px; background: #fff; padding: 2px; object-fit: cover; }
 .auth-remembered-id { font-size: 13px; color: var(--text-muted); margin-bottom: 2px; }
 .auth-intro { font-size: 15px; color: var(--text-muted); text-align: center; margin: 20px 0 18px; }
 .auth-form { display: flex; flex-direction: column; gap: 10px; }

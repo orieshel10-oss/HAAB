@@ -212,12 +212,14 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
   );
   const holidayCalendar = agreementRows[0] ? agreementRows[0].holiday_calendar : null;
   let holidaySet = new Set();
+  let holidayEveSet = new Set();
   if (holidayCalendar && holidayCalendar !== 'none') {
     const { rows: holidayRows } = await pool.query(
-      'SELECT date FROM holidays WHERE calendar_type = $1 AND date BETWEEN $2 AND $3',
-      [holidayCalendar, start, shiftDateStr(end, 1)]
+      'SELECT date, is_eve FROM holidays WHERE calendar_type = $1 AND date BETWEEN $2 AND $3',
+      [holidayCalendar, start, end]
     );
-    holidaySet = new Set(holidayRows.map((h) => h.date));
+    holidaySet = new Set(holidayRows.filter((h) => !h.is_eve).map((h) => h.date));
+    holidayEveSet = new Set(holidayRows.filter((h) => h.is_eve).map((h) => h.date));
   }
 
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -256,7 +258,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       weekday: new Date(year, month - 1, d).getDay(),
       dayType,
       isHoliday: holidaySet.has(ds),
-      isHolidayEve: holidayCalendar === 'jewish' && holidaySet.has(shiftDateStr(ds, 1)),
+      isHolidayEve: holidayEveSet.has(ds),
       absence,
       rows
     });

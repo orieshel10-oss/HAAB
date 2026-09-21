@@ -514,13 +514,13 @@ router.get('/holidays', asyncHandler(async (req, res) => {
 }));
 
 router.post('/holidays', asyncHandler(async (req, res) => {
-  const { date, calendarType, name } = req.body || {};
+  const { date, calendarType, name, isEve } = req.body || {};
   if (!ISO_DATE_RE.test(date || '')) return res.status(400).json({ error: 'invalid date' });
   if (!CALENDAR_TYPES.includes(calendarType)) return res.status(400).json({ error: `calendarType must be one of ${CALENDAR_TYPES.join(', ')}` });
   if (!name) return res.status(400).json({ error: 'name is required' });
   const { rows } = await pool.query(
-    'INSERT INTO holidays (date, calendar_type, name) VALUES ($1, $2, $3) RETURNING *',
-    [date, calendarType, name]
+    'INSERT INTO holidays (date, calendar_type, name, is_eve) VALUES ($1, $2, $3, $4) RETURNING *',
+    [date, calendarType, name, Boolean(isEve)]
   );
   res.json(rows[0]);
 }));

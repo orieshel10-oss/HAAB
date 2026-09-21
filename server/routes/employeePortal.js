@@ -56,7 +56,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   // console - keep them signed in far longer than the 8h admin default.
   req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
 
-  res.json({ ok: true });
+  res.json({ ok: true, firstName: employee.first_name });
 }));
 
 router.post('/logout', (req, res) => {

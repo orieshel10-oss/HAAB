@@ -149,10 +149,12 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
       // whichever day was last tapped rather than always marking the literal current date.
       if (ds === state.selectedDate) classes.push('today');
       if (info.hoursLabel) classes.push('has-hours');
+      if (info.holidayLabel) classes.push('holiday');
       html += `<button class="${classes.join(' ')}" data-date="${ds}">
         <span class="day-dot ${info.dotGroup || ''}"></span>
         <span class="day-num">${d}</span>
         <span class="day-hours">${info.hoursLabel || ''}</span>
+        <span class="day-holiday-label">${info.holidayLabel || ''}</span>
       </button>`;
     }
     html += '</div>';
@@ -181,6 +183,7 @@ const updateCal = createCalendarController({
       const category = day.absence ? (REPORT_TYPES_BY_CODE[day.absence.type] || {}).category : null;
       cellData[day.date] = {
         hoursLabel: totalMinutes ? minutesToLabel(totalMinutes) : '',
+        holidayLabel: day.isHoliday ? 'חג' : (day.isHolidayEve ? 'ערב חג' : ''),
         dotGroup: category === 'absence' ? 'sick' : (category === 'presence' ? 'vacation' : null)
       };
     });
@@ -191,49 +194,75 @@ const updateCal = createCalendarController({
 document.querySelector('[data-cal-prev="update"]').addEventListener('click', () => updateCal.setMonth(-1));
 document.querySelector('[data-cal-next="update"]').addEventListener('click', () => updateCal.setMonth(1));
 
-// Saturday has no standard hours (it's the rest day); Friday is the shortened 7h day; else 8h.
-// Mirrors server/attendance.js's dayTypeFromDate+standardDayMinutes for the "whole day" default.
-function standardHoursForDate(dateStr) {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const dow = new Date(y, m - 1, d).getDay();
-  if (dow === 6) return 0;
-  return dow === 5 ? 7 : 8;
+// Groups a day's raw events into entry/exit session pairs for editing. Unlike the server's
+// pairSessions (used for the analyzed sheet), a trailing unmatched 'in' is kept as an
+// open/incomplete session (exit: null) instead of dropped - so "already clocked in, just add
+// an exit" shows up as a prefilled row with an empty exit field, not silently disappears.
+function pairEventsIntoSessions(events) {
+  const sessions = [];
+  let openIn = null;
+  for (const ev of events) {
+    if (ev.type === 'in') {
+      openIn = ev.ts;
+    } else if (ev.type === 'out' && openIn) {
+      sessions.push({ inTs: openIn, outTs: ev.ts });
+      openIn = null;
+    }
+  }
+  if (openIn) sessions.push({ inTs: openIn, outTs: null });
+  return sessions;
+}
+
+function shiftIsoDate(iso, deltaDays) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + deltaDays);
+  return dateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+}
+
+function sessionRowHtml(entry, exit) {
+  return `
+    <div class="report-session-row">
+      <div class="time-field">
+        <label>שעת כניסה</label>
+        <input type="time" class="report-session-entry" value="${entry || ''}" />
+      </div>
+      <div class="time-field">
+        <label>שעת יציאה (לא חובה)</label>
+        <input type="time" class="report-session-exit" value="${exit || ''}" />
+      </div>
+      <button type="button" class="report-session-remove" title="הסרת שורה">✕</button>
+    </div>`;
+}
+
+function wireSessionRow(rowEl) {
+  rowEl.querySelector('.report-session-remove').addEventListener('click', () => rowEl.remove());
 }
 
 async function openUpdateModal(date) {
   const day = await api(`/api/attendance/day?date=${date}`);
 
-  const initialType = day.absence ? day.absence.type : 'attendance';
-  const initialWholeDay = day.absence ? day.events.length === 0 : false;
-  const firstIn = day.events.find(e => e.type === 'in');
-  const lastOutList = day.events.filter(e => e.type === 'out');
-  const lastOut = lastOutList[lastOutList.length - 1];
-  const initialEntry = firstIn ? fmtTime(firstIn.ts) : '08:00';
-  const initialExit = lastOut ? fmtTime(lastOut.ts) : '17:00';
+  // No defaults: an empty day starts with a blank type and one blank session row - the user
+  // reports every value themselves. A day with existing data prefills exactly what's there.
+  const initialType = day.absence ? day.absence.type : (day.events.length ? 'attendance' : '');
+  const sessions = pairEventsIntoSessions(day.events);
   const initialNote = day.absence && day.absence.note ? day.absence.note : '';
 
   const typeOptions = [
+    { value: '', label: '- בחרו סוג -' },
     { value: 'attendance', label: 'נוכחות' },
     ...Object.values(REPORT_TYPES_BY_CODE).map(t => ({ value: t.code, label: t.name }))
   ].map(o => `<option value="${o.value}" ${o.value === initialType ? 'selected' : ''}>${o.label}</option>`).join('');
 
+  const sessionsHtml = (sessions.length ? sessions : [{ inTs: null, outTs: null }])
+    .map(s => sessionRowHtml(s.inTs ? fmtTime(s.inTs) : '', s.outTs ? fmtTime(s.outTs) : ''))
+    .join('');
+
   openModal(`
     <h2>${date}</h2>
     <select class="report-select" id="report-type">${typeOptions}</select>
-    <label class="whole-day-toggle">
-      <input type="checkbox" id="report-whole-day" ${initialWholeDay ? 'checked' : ''} />
-      <span>יום שלם</span>
-    </label>
-    <div class="time-row" id="report-time-row">
-      <div class="time-field">
-        <label>שעת כניסה</label>
-        <input type="time" id="report-entry" value="${initialEntry}" />
-      </div>
-      <div class="time-field">
-        <label>שעת יציאה</label>
-        <input type="time" id="report-exit" value="${initialExit}" />
-      </div>
-    </div>
+    <div id="report-sessions">${sessionsHtml}</div>
+    <button type="button" class="modal-secondary" id="report-add-session">+ הוספת דיווח נוסף</button>
     <textarea id="report-note" placeholder="הערה (לא חובה)">${initialNote}</textarea>
     <div class="modal-actions">
       <button class="modal-secondary" id="report-cancel">ביטול</button>
@@ -241,46 +270,57 @@ async function openUpdateModal(date) {
     </div>
   `);
 
-  const wholeDayCheckbox = document.getElementById('report-whole-day');
-  const timeRow = document.getElementById('report-time-row');
-  function syncTimeRowVisibility() {
-    timeRow.style.display = wholeDayCheckbox.checked ? 'none' : 'flex';
-  }
-  syncTimeRowVisibility();
-  wholeDayCheckbox.addEventListener('change', syncTimeRowVisibility);
+  const sessionsContainer = document.getElementById('report-sessions');
+  sessionsContainer.querySelectorAll('.report-session-row').forEach(wireSessionRow);
+
+  document.getElementById('report-add-session').addEventListener('click', () => {
+    sessionsContainer.insertAdjacentHTML('beforeend', sessionRowHtml('', ''));
+    wireSessionRow(sessionsContainer.lastElementChild);
+  });
 
   document.getElementById('report-cancel').addEventListener('click', closeModal);
 
   document.getElementById('report-save').addEventListener('click', async () => {
     const type = document.getElementById('report-type').value;
-    const wholeDay = wholeDayCheckbox.checked;
-    const entry = document.getElementById('report-entry').value;
-    const exit = document.getElementById('report-exit').value;
     const note = document.getElementById('report-note').value.trim();
-
-    if (!wholeDay && (!entry || !exit)) {
-      alert('יש להזין שעת כניסה ושעת יציאה, או לסמן יום שלם');
-      return;
-    }
 
     await api(`/api/attendance/day/${date}/events`, { method: 'DELETE' });
 
+    if (!type) {
+      // Blank type cancels the report entirely - events are already cleared above.
+      await api(`/api/absences/${date}`, { method: 'DELETE' });
+      closeModal();
+      updateCal.refresh();
+      refreshStatus();
+      return;
+    }
+
+    const rows = [...sessionsContainer.querySelectorAll('.report-session-row')]
+      .map(row => ({
+        entry: row.querySelector('.report-session-entry').value,
+        exit: row.querySelector('.report-session-exit').value
+      }))
+      .filter(r => r.entry);
+
+    if (type === 'attendance' && rows.length === 0) {
+      alert('יש להזין לפחות שעת כניסה אחת');
+      return;
+    }
+
+    for (const row of rows) {
+      await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: row.entry }) });
+      if (row.exit) {
+        // Cross-midnight: an exit earlier than its own entry means it happened the next day -
+        // the entry always keeps this modal's own date, only the exit's date ever rolls over.
+        const exitDate = row.exit < row.entry ? shiftIsoDate(date, 1) : date;
+        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date: exitDate, type: 'out', time: row.exit }) });
+      }
+    }
+
     if (type === 'attendance') {
       await api(`/api/absences/${date}`, { method: 'DELETE' });
-      if (wholeDay) {
-        const hours = standardHoursForDate(date);
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: '08:00' }) });
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'out', time: `${pad(8 + hours)}:00` }) });
-      } else {
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: entry }) });
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'out', time: exit }) });
-      }
     } else {
       await api('/api/absences', { method: 'POST', body: JSON.stringify({ date, type, note }) });
-      if (!wholeDay) {
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'in', time: entry }) });
-        await api('/api/attendance/manual', { method: 'POST', body: JSON.stringify({ date, type: 'out', time: exit }) });
-      }
     }
 
     closeModal();
@@ -389,6 +429,14 @@ function minutesToLabel(minutes) {
 /* ---------- auth: org selection + employee login ---------- */
 const ORG_CODE_STORAGE_KEY = 'haab_org_code';
 const EMPLOYEE_ID_STORAGE_KEY = 'haab_employee_id';
+const EMPLOYEE_NAME_STORAGE_KEY = 'haab_employee_name';
+
+function greetingForHour(hour) {
+  if (hour >= 5 && hour < 10) return 'בוקר טוב';
+  if (hour >= 10 && hour < 18) return 'שלום';
+  if (hour >= 18 && hour < 21) return 'ערב טוב';
+  return 'לילה טוב';
+}
 
 function showOrgLoginBranding(org) {
   document.getElementById('employee-login-org-name').textContent = org.name;
@@ -406,12 +454,14 @@ function showOrgLoginBranding(org) {
 // doesn't need two code paths.
 function syncRememberedIdUi() {
   const savedId = localStorage.getItem(EMPLOYEE_ID_STORAGE_KEY);
+  const savedName = localStorage.getItem(EMPLOYEE_NAME_STORAGE_KEY);
   const remembered = document.getElementById('employee-login-id-remembered');
   const field = document.getElementById('employee-login-id-field');
   const input = document.getElementById('employee-login-id');
   if (savedId) {
     input.value = savedId;
-    remembered.textContent = `מחוברים כ: ${savedId}`;
+    const greeting = greetingForHour(new Date().getHours());
+    remembered.textContent = savedName ? `${greeting}, ${savedName}` : greeting;
     remembered.classList.remove('hidden');
     field.classList.add('hidden');
   } else {
@@ -441,6 +491,7 @@ async function showAuthGate() {
     // rather than getting stuck showing a login form with no branding.
     localStorage.removeItem(ORG_CODE_STORAGE_KEY);
     localStorage.removeItem(EMPLOYEE_ID_STORAGE_KEY);
+    localStorage.removeItem(EMPLOYEE_NAME_STORAGE_KEY);
     showScreen('org-select');
   }
 }
@@ -479,7 +530,9 @@ employeeLoginForm.addEventListener('submit', async (e) => {
       body: JSON.stringify({ orgCode, idNumber, password })
     });
     if (!res.ok) { msg.textContent = 'פרטי התחברות שגויים'; return; }
+    const loginData = await res.json();
     localStorage.setItem(EMPLOYEE_ID_STORAGE_KEY, idNumber);
+    if (loginData.firstName) localStorage.setItem(EMPLOYEE_NAME_STORAGE_KEY, loginData.firstName);
     employeeLoginForm.reset();
     await loadReportTypes();
     showScreen('home');
@@ -500,6 +553,7 @@ document.getElementById('employee-login-password-toggle').addEventListener('clic
 document.getElementById('change-org-btn').addEventListener('click', () => {
   localStorage.removeItem(ORG_CODE_STORAGE_KEY);
   localStorage.removeItem(EMPLOYEE_ID_STORAGE_KEY);
+  localStorage.removeItem(EMPLOYEE_NAME_STORAGE_KEY);
   document.getElementById('org-select-code').value = '';
   document.getElementById('org-select-msg').textContent = '';
   showScreen('org-select');

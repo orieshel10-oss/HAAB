@@ -50,6 +50,9 @@
           </div>
         </div>
         <div><label>שם החג</label><input id="hol-name" required /></div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
+          <input type="checkbox" id="hol-is-eve" style="width:auto;" /> ערב חג
+        </label>
         <div class="form-msg" id="holiday-form-msg"></div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">שמירה</button>
@@ -165,7 +168,12 @@ holidayForm.addEventListener('submit', async (e) => {
   try {
     await api('/api/system/holidays', {
       method: 'POST',
-      body: JSON.stringify({ date: toIsoDate(parsed), calendarType: document.getElementById('hol-calendar').value, name: document.getElementById('hol-name').value.trim() })
+      body: JSON.stringify({
+        date: toIsoDate(parsed),
+        calendarType: document.getElementById('hol-calendar').value,
+        name: document.getElementById('hol-name').value.trim(),
+        isEve: document.getElementById('hol-is-eve').checked
+      })
     });
     holidayForm.reset();
     holidayForm.classList.add('hidden');
