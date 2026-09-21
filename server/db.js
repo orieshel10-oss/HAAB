@@ -114,6 +114,19 @@ async function init() {
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS apartment TEXT;
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS entrance TEXT;
     ALTER TABLE employees ADD COLUMN IF NOT EXISTS zip_code TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS employment_start_date TEXT;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS employment_end_date TEXT;
+
+    -- Populated once via scripts/seed-streets.js from the official data.gov.il dataset (~51k
+    -- rows), not on every boot. A street code is only unique within its city, hence the
+    -- composite key.
+    CREATE TABLE IF NOT EXISTS streets (
+      city_code INTEGER NOT NULL,
+      street_code INTEGER NOT NULL,
+      name_he TEXT NOT NULL,
+      PRIMARY KEY (city_code, street_code)
+    );
+    CREATE INDEX IF NOT EXISTS idx_streets_city_name ON streets(city_code, name_he);
 
     -- Populated once via scripts/seed-cities.js from the official data.gov.il dataset, not on
     -- every boot (keeps server startup independent of an external network call).

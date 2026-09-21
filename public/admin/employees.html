@@ -24,8 +24,11 @@
 
     <section class="admin-section">
       <div class="admin-section-head">
-        <h2>עובדים</h2>
-        <button class="btn btn-primary btn-small" id="new-emp-btn">+ עובד חדש</button>
+        <h2 id="emp-list-title">עובדים פעילים</h2>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-secondary btn-small" id="toggle-inactive-btn">עובדים לא פעילים</button>
+          <button class="btn btn-primary btn-small" id="new-emp-btn">+ עובד חדש</button>
+        </div>
       </div>
       <table class="admin-table">
         <thead><tr><th>שם</th><th>ת.ז./דרכון</th><th>נייד</th><th>תת-ארגון</th><th></th><th></th></tr></thead>
@@ -41,7 +44,7 @@
           </select>
         </div>
         <div class="form-row">
-          <div><label id="emp-id-label">מספר תעודת זהות</label><input id="emp-id-number" required /></div>
+          <div><label id="emp-id-label">מספר תעודת זהות</label><input id="emp-id-number" required /><div class="field-msg" id="emp-id-msg"></div></div>
           <div></div>
         </div>
         <div class="form-row">
@@ -49,31 +52,44 @@
           <div><label>שם משפחה</label><input id="emp-last-name" required /></div>
         </div>
         <div class="form-row">
-          <div><label>שם פרטי (אנגלית)</label><input id="emp-first-name-en" /></div>
-          <div><label>שם משפחה (אנגלית)</label><input id="emp-last-name-en" /></div>
+          <div><label>שם פרטי (אנגלית)</label><input id="emp-first-name-en" /><div class="field-msg" id="emp-first-name-en-msg"></div></div>
+          <div><label>שם משפחה (אנגלית)</label><input id="emp-last-name-en" /><div class="field-msg" id="emp-last-name-en-msg"></div></div>
         </div>
         <div class="form-row">
-          <div><label>מייל</label><input id="emp-email" type="email" /></div>
+          <div><label>מייל</label><input id="emp-email" type="email" /><div class="field-msg" id="emp-email-msg"></div></div>
           <div><label>נייד</label><input id="emp-mobile" required /></div>
+        </div>
+
+        <div class="modal-section-title">העסקה</div>
+        <div class="form-row">
+          <div><label>תאריך תחילת עבודה</label><input id="emp-start-date" type="date" /></div>
+          <div><label>תאריך סיום עבודה</label><input id="emp-end-date" type="date" /></div>
         </div>
 
         <div class="modal-section-title">כתובת</div>
         <div class="form-row">
           <div class="city-field">
-            <label>עיר</label>
+            <label>שם ישוב</label>
             <input id="emp-city-search" autocomplete="off" required placeholder="הקלידו לחיפוש..." />
-            <input type="hidden" id="emp-city-code" />
             <div class="city-suggestions hidden" id="emp-city-suggestions"></div>
           </div>
-          <div><label>רחוב</label><input id="emp-street" required /></div>
+          <div><label>קוד ישוב</label><input id="emp-city-code" inputmode="numeric" placeholder="למשל 5000" /></div>
         </div>
         <div class="form-row">
-          <div><label>מספר בית</label><input id="emp-house-number" required inputmode="numeric" pattern="\d+" /></div>
-          <div><label>דירה</label><input id="emp-apartment" /></div>
+          <div class="city-field">
+            <label>רחוב</label>
+            <input id="emp-street" autocomplete="off" required placeholder="הקלידו לחיפוש..." />
+            <div class="city-suggestions hidden" id="emp-street-suggestions"></div>
+          </div>
+          <div><label>מספר בית</label><input id="emp-house-number" required inputmode="numeric" /></div>
         </div>
         <div class="form-row">
+          <div><label>דירה</label><input id="emp-apartment" inputmode="numeric" /></div>
           <div><label>כניסה</label><input id="emp-entrance" /></div>
-          <div><label>מיקוד</label><input id="emp-zip" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>מיקוד</label><input id="emp-zip" inputmode="numeric" maxlength="7" /><div class="field-msg" id="emp-zip-msg"></div></div>
+          <div></div>
         </div>
 
         <div id="emp-subOrg-wrap" class="hidden">
@@ -104,11 +120,38 @@ async function api(path, options) {
   return data;
 }
 
+function showTempMsg(msgId, text, ms) {
+  const el = document.getElementById(msgId);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'field-msg error';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.textContent = ''; }, ms || 2500);
+}
+function clearMsg(msgId) {
+  const el = document.getElementById(msgId);
+  if (el) { el.textContent = ''; clearTimeout(el._timer); }
+}
+
+// Filters keystrokes/paste live so disallowed characters never appear at all, rather than
+// validating after the fact - e.g. Hebrew literally cannot be typed into an "English name" field.
+function restrictInput(inputId, allowedCharRe, msgId, msgText) {
+  const input = document.getElementById(inputId);
+  input.addEventListener('input', () => {
+    const stripped = [...input.value].filter((ch) => allowedCharRe.test(ch)).join('');
+    if (stripped !== input.value) {
+      input.value = stripped;
+      if (msgId && msgText) showTempMsg(msgId, msgText);
+    }
+  });
+}
+
 const ROLE_LABELS = { system_admin: 'System Admin', org_admin: 'Org Admin', time_admin: 'Time Admin' };
 let me = null;
 let empsCache = [];
 let subOrgsCache = [];
 let editingEmpId = null;
+let employeeFilter = 'active';
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
   if (me.role === 'system_admin') {
@@ -120,38 +163,134 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('emp-id-type').addEventListener('change', (e) => {
-  document.getElementById('emp-id-label').textContent = e.target.value === 'passport' ? 'מספר דרכון' : 'מספר תעודת זהות';
+document.getElementById('toggle-inactive-btn').addEventListener('click', () => {
+  employeeFilter = employeeFilter === 'active' ? 'inactive' : 'active';
+  document.getElementById('toggle-inactive-btn').textContent = employeeFilter === 'active' ? 'עובדים לא פעילים' : 'עובדים פעילים';
+  document.getElementById('emp-list-title').textContent = employeeFilter === 'active' ? 'עובדים פעילים' : 'עובדים לא פעילים';
+  loadEmployees();
 });
 
-/* ---------- city autocomplete ---------- */
-let cityMap = {};
-let citySearchTimer = null;
+document.getElementById('emp-id-type').addEventListener('change', (e) => {
+  document.getElementById('emp-id-label').textContent = e.target.value === 'passport' ? 'מספר דרכון' : 'מספר תעודת זהות';
+  clearMsg('emp-id-msg');
+});
+
+// Same check-digit algorithm as server/auth.js's isValidIsraeliId - mirrored client-side purely
+// for instant on-blur feedback; the server still re-validates authoritatively.
+function isValidIsraeliIdClientSide(id) {
+  const clean = String(id || '').trim();
+  if (!/^\d{1,9}$/.test(clean)) return false;
+  const padded = clean.padStart(9, '0');
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    let digit = Number(padded[i]) * ((i % 2) + 1);
+    if (digit > 9) digit -= 9;
+    sum += digit;
+  }
+  return sum % 10 === 0;
+}
+document.getElementById('emp-id-number').addEventListener('blur', () => {
+  const type = document.getElementById('emp-id-type').value;
+  const val = document.getElementById('emp-id-number').value.trim();
+  if (type === 'israeli_id' && val && !isValidIsraeliIdClientSide(val)) {
+    showTempMsg('emp-id-msg', 'מספר תעודת הזהות אינו תקין', 5000);
+  } else {
+    clearMsg('emp-id-msg');
+  }
+});
+
+restrictInput('emp-first-name-en', /[A-Za-z' -]/, 'emp-first-name-en-msg', 'אין לכתוב בשפה שונה מאנגלית');
+restrictInput('emp-last-name-en', /[A-Za-z' -]/, 'emp-last-name-en-msg', 'אין לכתוב בשפה שונה מאנגלית');
+restrictInput('emp-house-number', /[0-9]/);
+restrictInput('emp-apartment', /[0-9]/);
+restrictInput('emp-zip', /[0-9]/);
+restrictInput('emp-city-code', /[0-9]/);
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+document.getElementById('emp-email').addEventListener('blur', () => {
+  const val = document.getElementById('emp-email').value.trim();
+  if (val && !EMAIL_RE.test(val)) {
+    showTempMsg('emp-email-msg', 'Invalid email address (example: name@example.com)', 5000);
+  } else {
+    clearMsg('emp-email-msg');
+  }
+});
+
+document.getElementById('emp-zip').addEventListener('blur', () => {
+  const val = document.getElementById('emp-zip').value.trim();
+  if (val && val.length !== 7) {
+    showTempMsg('emp-zip-msg', 'Zip code must be exactly 7 digits', 5000);
+  } else {
+    clearMsg('emp-zip-msg');
+  }
+});
+
+/* ---------- city autocomplete (name -> code) ---------- */
 document.getElementById('emp-city-search').addEventListener('input', (e) => {
-  document.getElementById('emp-city-code').value = '';
   const q = e.target.value.trim();
-  clearTimeout(citySearchTimer);
+  clearTimeout(document._citySearchTimer);
   if (q.length < 2) {
     document.getElementById('emp-city-suggestions').classList.add('hidden');
     return;
   }
-  citySearchTimer = setTimeout(async () => {
+  document._citySearchTimer = setTimeout(async () => {
     const results = await api(`/api/org/cities?q=${encodeURIComponent(q)}`);
-    cityMap = {};
     const box = document.getElementById('emp-city-suggestions');
-    box.innerHTML = results.map(c => { cityMap[c.name_he] = c.code; return `<div data-name="${c.name_he}">${c.name_he}</div>`; }).join('');
+    box.innerHTML = results.map(c => `<div data-name="${c.name_he}" data-code="${c.code}">${c.name_he}</div>`).join('');
     box.classList.toggle('hidden', results.length === 0);
     box.querySelectorAll('div').forEach(el => {
       el.addEventListener('click', () => {
         document.getElementById('emp-city-search').value = el.dataset.name;
-        document.getElementById('emp-city-code').value = cityMap[el.dataset.name];
+        document.getElementById('emp-city-code').value = el.dataset.code;
         box.classList.add('hidden');
       });
     });
   }, 250);
 });
+
+/* ---------- city code -> name (reverse lookup) ---------- */
+document.getElementById('emp-city-code').addEventListener('input', (e) => {
+  clearTimeout(document._cityCodeTimer);
+  const code = e.target.value.trim();
+  if (!code) return;
+  document._cityCodeTimer = setTimeout(async () => {
+    try {
+      const city = await api(`/api/org/cities/${encodeURIComponent(code)}`);
+      document.getElementById('emp-city-search').value = city.name_he;
+    } catch (err) {
+      // unknown code - leave the name field as-is, user may still be typing
+    }
+  }, 350);
+});
+
+/* ---------- street autocomplete (scoped to the selected city) ---------- */
+document.getElementById('emp-street').addEventListener('input', (e) => {
+  const q = e.target.value.trim();
+  const cityCode = document.getElementById('emp-city-code').value.trim();
+  clearTimeout(document._streetSearchTimer);
+  if (!cityCode || q.length < 1) {
+    document.getElementById('emp-street-suggestions').classList.add('hidden');
+    return;
+  }
+  document._streetSearchTimer = setTimeout(async () => {
+    const results = await api(`/api/org/streets?cityCode=${encodeURIComponent(cityCode)}&q=${encodeURIComponent(q)}`);
+    const box = document.getElementById('emp-street-suggestions');
+    box.innerHTML = results.map(s => `<div data-name="${s.name_he}">${s.name_he}</div>`).join('');
+    box.classList.toggle('hidden', results.length === 0);
+    box.querySelectorAll('div').forEach(el => {
+      el.addEventListener('click', () => {
+        document.getElementById('emp-street').value = el.dataset.name;
+        box.classList.add('hidden');
+      });
+    });
+  }, 250);
+});
+
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('.city-field')) document.getElementById('emp-city-suggestions').classList.add('hidden');
+  if (!e.target.closest('.city-field')) {
+    document.getElementById('emp-city-suggestions').classList.add('hidden');
+    document.getElementById('emp-street-suggestions').classList.add('hidden');
+  }
 });
 
 /* ---------- sub-orgs ---------- */
@@ -164,7 +303,7 @@ async function loadSubOrgs() {
 
 /* ---------- employees ---------- */
 async function loadEmployees() {
-  empsCache = await api('/api/org/employees');
+  empsCache = await api(`/api/org/employees?status=${employeeFilter}`);
   const tbody = document.getElementById('emp-tbody');
   const subOrgName = (id) => (subOrgsCache.find(s => s.id === id) || {}).name || '-';
   tbody.innerHTML = empsCache.length ? empsCache.map(e => `
@@ -175,7 +314,7 @@ async function loadEmployees() {
       <td>${e.sub_org_id ? subOrgName(e.sub_org_id) : '-'}</td>
       <td><button class="btn btn-secondary btn-small edit-emp-btn" data-id="${e.id}">עריכה</button></td>
       <td><button class="btn btn-danger btn-small delete-emp-btn" data-id="${e.id}">מחיקה</button></td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="6">אין עדיין עובדים</td></tr>';
+    </tr>`).join('') : `<tr class="empty-row"><td colspan="6">${employeeFilter === 'active' ? 'אין עובדים פעילים' : 'אין עובדים לא פעילים'}</td></tr>`;
 
   tbody.querySelectorAll('.edit-emp-btn').forEach(btn => btn.addEventListener('click', () => openEditEmp(btn.dataset.id)));
   tbody.querySelectorAll('.delete-emp-btn').forEach(btn => btn.addEventListener('click', () => deleteEmp(btn.dataset.id)));
@@ -186,9 +325,9 @@ const empForm = document.getElementById('emp-form');
 function resetEmpForm() {
   editingEmpId = null;
   empForm.reset();
-  document.getElementById('emp-city-code').value = '';
   document.getElementById('emp-id-label').textContent = 'מספר תעודת זהות';
   document.getElementById('emp-submit-btn').textContent = 'שמירה';
+  ['emp-id-msg', 'emp-first-name-en-msg', 'emp-last-name-en-msg', 'emp-email-msg', 'emp-zip-msg'].forEach(clearMsg);
 }
 
 document.getElementById('new-emp-btn').addEventListener('click', () => {
@@ -222,9 +361,15 @@ function openEditEmp(id) {
   document.getElementById('emp-apartment').value = e.apartment || '';
   document.getElementById('emp-entrance').value = e.entrance || '';
   document.getElementById('emp-zip').value = e.zip_code || '';
+  document.getElementById('emp-start-date').value = e.employment_start_date || '';
+  document.getElementById('emp-end-date').value = e.employment_end_date || '';
   document.getElementById('emp-city-code').value = e.city_code || '';
-  const cityKnown = Object.entries(cityMap).find(([, code]) => code === e.city_code);
-  document.getElementById('emp-city-search').value = cityKnown ? cityKnown[0] : (e.city_code ? `קוד עיר ${e.city_code}` : '');
+  document.getElementById('emp-city-search').value = '';
+  if (e.city_code) {
+    api(`/api/org/cities/${e.city_code}`).then(city => {
+      document.getElementById('emp-city-search').value = city.name_he;
+    }).catch(() => {});
+  }
   if (e.sub_org_id) document.getElementById('emp-sub-org').value = e.sub_org_id;
   document.getElementById('emp-submit-btn').textContent = 'עדכון';
   document.getElementById('emp-form-msg').textContent = '';
@@ -237,6 +382,11 @@ const EMP_ERROR_MSGS = {
   'mobile is required': 'נייד חובה',
   'city, street and houseNumber are required': 'עיר, רחוב ומספר בית חובה',
   'houseNumber must contain digits only': 'מספר בית יכול להכיל ספרות בלבד',
+  'apartment must contain digits only': 'Apartment number must contain digits only',
+  'zipCode must be exactly 7 digits': 'Zip code must be exactly 7 digits',
+  'invalid email address': 'Invalid email address',
+  'firstNameEn must contain English letters only': 'First name (English) must contain English letters only',
+  'lastNameEn must contain English letters only': 'Last name (English) must contain English letters only',
   'idNumber is required': 'יש להזין מספר מזהה',
   'invalid Israeli ID number': 'מספר תעודת הזהות אינו תקין',
   'subOrgId is required because this organization has sub-organizations': 'חובה לבחור תת-ארגון',
@@ -258,12 +408,14 @@ empForm.addEventListener('submit', async (e) => {
     lastNameEn: document.getElementById('emp-last-name-en').value.trim(),
     email: document.getElementById('emp-email').value.trim(),
     mobile: document.getElementById('emp-mobile').value.trim(),
-    cityCode: document.getElementById('emp-city-code').value || null,
+    cityCode: document.getElementById('emp-city-code').value.trim() || null,
     street: document.getElementById('emp-street').value.trim(),
     houseNumber: document.getElementById('emp-house-number').value.trim(),
     apartment: document.getElementById('emp-apartment').value.trim(),
     entrance: document.getElementById('emp-entrance').value.trim(),
     zipCode: document.getElementById('emp-zip').value.trim(),
+    employmentStartDate: document.getElementById('emp-start-date').value || null,
+    employmentEndDate: document.getElementById('emp-end-date').value || null,
     subOrgId: subOrgsCache.length ? Number(document.getElementById('emp-sub-org').value) : null
   };
   try {

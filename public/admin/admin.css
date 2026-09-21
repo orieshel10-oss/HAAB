@@ -172,6 +172,8 @@ body { background: var(--bg); }
 .city-suggestions div { padding: 9px 12px; font-size: 13px; cursor: pointer; }
 .city-suggestions div:hover { background: var(--bg); }
 .role-badge { font-size: 12px; color: var(--text-muted); margin-top: -4px; margin-bottom: 8px; }
+.field-msg { font-size: 11px; min-height: 14px; margin-top: 2px; }
+.field-msg.error { color: var(--red-dark); }
 
 .modal-overlay-simple {
   position: fixed; inset: 0; background: rgba(15,17,25,0.45);

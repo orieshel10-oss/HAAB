@@ -61,7 +61,7 @@ router.get('/me', asyncHandler(async (req, res) => {
   });
 }));
 
-/* ---------- cities (autocomplete) ---------- */
+/* ---------- cities (autocomplete + reverse lookup for the code<->name pair) ---------- */
 
 router.get('/cities', asyncHandler(async (req, res) => {
   const q = (req.query.q || '').trim();
@@ -69,6 +69,25 @@ router.get('/cities', asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT code, name_he FROM cities WHERE name_he ILIKE $1 ORDER BY name_he LIMIT 20',
     [`%${q}%`]
+  );
+  res.json(rows);
+}));
+
+router.get('/cities/:code', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT code, name_he FROM cities WHERE code = $1', [Number(req.params.code)]);
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
+}));
+
+/* ---------- streets (autocomplete, scoped to a city) ---------- */
+
+router.get('/streets', asyncHandler(async (req, res) => {
+  const cityCode = Number(req.query.cityCode);
+  const q = (req.query.q || '').trim();
+  if (!cityCode) return res.status(400).json({ error: 'cityCode is required' });
+  const { rows } = await pool.query(
+    'SELECT street_code, name_he FROM streets WHERE city_code = $1 AND name_he ILIKE $2 ORDER BY name_he LIMIT 20',
+    [cityCode, `%${q}%`]
   );
   res.json(rows);
 }));
@@ -91,31 +110,54 @@ router.get('/sub-organizations', asyncHandler(async (req, res) => {
 /* ---------- employees ---------- */
 
 const EMPLOYEE_COLUMNS = `id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
-  email, mobile, city_code, street, house_number, apartment, entrance, zip_code, sub_org_id`;
+  email, mobile, city_code, street, house_number, apartment, entrance, zip_code, sub_org_id,
+  employment_start_date, employment_end_date`;
 
+// Active = today is on/after the start date (or no start date set) AND on/before the end date
+// (or no end date set) - so a brand-new employee with neither date is active by default, and
+// setting an end date in the past is what "deactivates" them.
 router.get('/employees', asyncHandler(async (req, res) => {
   const { orgId, subOrgRestriction } = req.orgContext;
+  const wantInactive = req.query.status === 'inactive';
   const params = [orgId];
   let query = `SELECT ${EMPLOYEE_COLUMNS} FROM employees WHERE client_id = $1`;
   if (subOrgRestriction) {
     query += ' AND sub_org_id = ANY($2::int[])';
     params.push(subOrgRestriction);
   }
+  if (wantInactive) {
+    query += ` AND NOT ((employment_start_date IS NULL OR employment_start_date <= to_char(now(), 'YYYY-MM-DD'))
+                     AND (employment_end_date IS NULL OR employment_end_date >= to_char(now(), 'YYYY-MM-DD')))`;
+  } else {
+    query += ` AND (employment_start_date IS NULL OR employment_start_date <= to_char(now(), 'YYYY-MM-DD'))
+               AND (employment_end_date IS NULL OR employment_end_date >= to_char(now(), 'YYYY-MM-DD'))`;
+  }
   query += ' ORDER BY last_name NULLS LAST, first_name NULLS LAST';
   const { rows } = await pool.query(query, params);
   res.json(rows);
 }));
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ENGLISH_NAME_RE = /^[A-Za-z' -]*$/;
+const DIGITS_RE = /^\d+$/;
+const ZIP_RE = /^\d{7}$/;
+
 async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   const {
     idNumber, idType, firstName, lastName, firstNameEn, lastNameEn,
-    email, mobile, cityCode, street, houseNumber, apartment, entrance, zipCode, subOrgId
+    email, mobile, cityCode, street, houseNumber, apartment, entrance, zipCode, subOrgId,
+    employmentStartDate, employmentEndDate
   } = body || {};
 
   if (!firstName || !lastName) return { status: 400, error: 'firstName and lastName are required' };
   if (!mobile) return { status: 400, error: 'mobile is required' };
   if (!cityCode || !street || !houseNumber) return { status: 400, error: 'city, street and houseNumber are required' };
-  if (!/^\d+$/.test(String(houseNumber))) return { status: 400, error: 'houseNumber must contain digits only' };
+  if (!DIGITS_RE.test(String(houseNumber))) return { status: 400, error: 'houseNumber must contain digits only' };
+  if (apartment && !DIGITS_RE.test(String(apartment))) return { status: 400, error: 'apartment must contain digits only' };
+  if (zipCode && !ZIP_RE.test(String(zipCode))) return { status: 400, error: 'zipCode must be exactly 7 digits' };
+  if (email && !EMAIL_RE.test(email)) return { status: 400, error: 'invalid email address' };
+  if (firstNameEn && !ENGLISH_NAME_RE.test(firstNameEn)) return { status: 400, error: 'firstNameEn must contain English letters only' };
+  if (lastNameEn && !ENGLISH_NAME_RE.test(lastNameEn)) return { status: 400, error: 'lastNameEn must contain English letters only' };
 
   const type = idType === 'passport' ? 'passport' : 'israeli_id';
   if (type === 'passport') {
@@ -142,7 +184,8 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
       idNumber, idType: type, firstName, lastName, firstNameEn: firstNameEn || null, lastNameEn: lastNameEn || null,
       email: email || null, mobile, cityCode, street, houseNumber: String(houseNumber),
       apartment: apartment || null, entrance: entrance || null, zipCode: zipCode || null,
-      subOrgId: subOrgId || null
+      subOrgId: subOrgId || null,
+      employmentStartDate: employmentStartDate || null, employmentEndDate: employmentEndDate || null
     }
   };
 }
@@ -157,11 +200,13 @@ router.post('/employees', asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     `INSERT INTO employees
        (client_id, name, sub_org_id, id_number, id_type, first_name, last_name, first_name_en, last_name_en,
-        email, mobile, city_code, street, house_number, apartment, entrance, zip_code)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        email, mobile, city_code, street, house_number, apartment, entrance, zip_code,
+        employment_start_date, employment_end_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING ${EMPLOYEE_COLUMNS}`,
     [orgId, name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
-      d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode]
+      d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
+      d.employmentStartDate, d.employmentEndDate]
   );
   res.json(rows[0]);
 }));
@@ -187,11 +232,12 @@ router.put('/employees/:id', asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     `UPDATE employees SET name=$1, sub_org_id=$2, id_number=$3, id_type=$4, first_name=$5, last_name=$6,
        first_name_en=$7, last_name_en=$8, email=$9, mobile=$10, city_code=$11, street=$12, house_number=$13,
-       apartment=$14, entrance=$15, zip_code=$16
-     WHERE id = $17 AND client_id = $18
+       apartment=$14, entrance=$15, zip_code=$16, employment_start_date=$17, employment_end_date=$18
+     WHERE id = $19 AND client_id = $20
      RETURNING ${EMPLOYEE_COLUMNS}`,
     [name, d.subOrgId, d.idNumber, d.idType, d.firstName, d.lastName, d.firstNameEn, d.lastNameEn,
       d.email, d.mobile, d.cityCode, d.street, d.houseNumber, d.apartment, d.entrance, d.zipCode,
+      d.employmentStartDate, d.employmentEndDate,
       Number(req.params.id), orgId]
   );
   res.json(rows[0]);
