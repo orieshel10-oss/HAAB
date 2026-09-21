@@ -141,6 +141,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ENGLISH_NAME_RE = /^[A-Za-z' -]*$/;
 const DIGITS_RE = /^\d+$/;
 const ZIP_RE = /^\d{7}$/;
+const MOBILE_RE = /^(?:\+972|972|0)?(5[0-9]-?[0-9]{7})$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   const {
@@ -151,6 +153,7 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
 
   if (!firstName || !lastName) return { status: 400, error: 'firstName and lastName are required' };
   if (!mobile) return { status: 400, error: 'mobile is required' };
+  if (!MOBILE_RE.test(mobile)) return { status: 400, error: 'invalid mobile number' };
   if (!cityCode || !street || !houseNumber) return { status: 400, error: 'city, street and houseNumber are required' };
   if (!DIGITS_RE.test(String(houseNumber))) return { status: 400, error: 'houseNumber must contain digits only' };
   if (apartment && !DIGITS_RE.test(String(apartment))) return { status: 400, error: 'apartment must contain digits only' };
@@ -158,6 +161,9 @@ async function validateEmployeeInput(body, orgId, subOrgRestriction) {
   if (email && !EMAIL_RE.test(email)) return { status: 400, error: 'invalid email address' };
   if (firstNameEn && !ENGLISH_NAME_RE.test(firstNameEn)) return { status: 400, error: 'firstNameEn must contain English letters only' };
   if (lastNameEn && !ENGLISH_NAME_RE.test(lastNameEn)) return { status: 400, error: 'lastNameEn must contain English letters only' };
+  if (!employmentStartDate) return { status: 400, error: 'employmentStartDate is required' };
+  if (!ISO_DATE_RE.test(employmentStartDate)) return { status: 400, error: 'invalid employmentStartDate' };
+  if (employmentEndDate && !ISO_DATE_RE.test(employmentEndDate)) return { status: 400, error: 'invalid employmentEndDate' };
 
   const type = idType === 'passport' ? 'passport' : 'israeli_id';
   if (type === 'passport') {

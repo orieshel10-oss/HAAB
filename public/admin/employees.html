@@ -57,13 +57,21 @@
         </div>
         <div class="form-row">
           <div><label>מייל</label><input id="emp-email" type="email" /><div class="field-msg" id="emp-email-msg"></div></div>
-          <div><label>נייד</label><input id="emp-mobile" required /></div>
+          <div><label>נייד</label><input id="emp-mobile" required /><div class="field-msg" id="emp-mobile-msg"></div></div>
         </div>
 
         <div class="modal-section-title">העסקה</div>
         <div class="form-row">
-          <div><label>תאריך תחילת עבודה</label><input id="emp-start-date" type="date" /></div>
-          <div><label>תאריך סיום עבודה</label><input id="emp-end-date" type="date" /></div>
+          <div>
+            <label>תאריך תחילת עבודה</label>
+            <input id="emp-start-date" required placeholder="DD/MM/YYYY" inputmode="numeric" />
+            <div class="field-msg" id="emp-start-date-msg"></div>
+          </div>
+          <div>
+            <label>תאריך סיום עבודה</label>
+            <input id="emp-end-date" placeholder="DD/MM/YYYY" inputmode="numeric" />
+            <div class="field-msg" id="emp-end-date-msg"></div>
+          </div>
         </div>
 
         <div class="modal-section-title">כתובת</div>
@@ -225,6 +233,74 @@ document.getElementById('emp-zip').addEventListener('blur', () => {
   }
 });
 
+const MOBILE_RE = /^(?:\+972|972|0)?(5[0-9]-?[0-9]{7})$/;
+restrictInput('emp-mobile', /[0-9+-]/);
+document.getElementById('emp-mobile').addEventListener('blur', () => {
+  const val = document.getElementById('emp-mobile').value.trim();
+  if (val && !MOBILE_RE.test(val)) {
+    showTempMsg('emp-mobile-msg', 'Invalid mobile number (example: 050-1234567)', 5000);
+  } else {
+    clearMsg('emp-mobile-msg');
+  }
+});
+
+/* ---------- freeform date parsing: DDMMYYYY / DDMMYY / DD.MM.YY / DD.MM.YYYY -> DD/MM/YYYY ---------- */
+// Accepts an optional separator (. / -) or none at all, and a 2- or 4-digit year (2-digit is
+// assumed to be 20XX). Returns {day, month, year} (year always 4 digits) or null if unparseable
+// or not a real calendar date (e.g. 31/02).
+function parseFreeformDate(raw) {
+  const s = (raw || '').trim();
+  let day, month, year;
+  let m = s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2}|\d{4})$/);
+  if (m) {
+    [, day, month, year] = m;
+  } else if (/^\d{8}$/.test(s)) {
+    day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 8);
+  } else if (/^\d{6}$/.test(s)) {
+    day = s.slice(0, 2); month = s.slice(2, 4); year = s.slice(4, 6);
+  } else {
+    return null;
+  }
+  day = Number(day); month = Number(month); year = Number(year);
+  if (year < 100) year += 2000;
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return { day, month, year };
+}
+function formatDDMMYYYY({ day, month, year }) {
+  return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+}
+function toIsoDate({ day, month, year }) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+function fromIsoDate(iso) {
+  if (!iso) return null;
+  const [year, month, day] = iso.split('-').map(Number);
+  return { day, month, year };
+}
+
+function wireDateField(inputId, msgId, required) {
+  const input = document.getElementById(inputId);
+  input.addEventListener('blur', () => {
+    const raw = input.value.trim();
+    if (!raw) {
+      input.value = '';
+      if (required) showTempMsg(msgId, 'Start date is required', 6000);
+      else clearMsg(msgId);
+      return;
+    }
+    const parsed = parseFreeformDate(raw);
+    if (!parsed) {
+      showTempMsg(msgId, 'Invalid date - try DDMMYYYY, DD.MM.YYYY or DD/MM/YYYY', 6000);
+      return;
+    }
+    input.value = formatDDMMYYYY(parsed);
+    clearMsg(msgId);
+  });
+}
+wireDateField('emp-start-date', 'emp-start-date-msg', true);
+wireDateField('emp-end-date', 'emp-end-date-msg', false);
+
 /* ---------- city autocomplete (name -> code) ---------- */
 document.getElementById('emp-city-search').addEventListener('input', (e) => {
   const q = e.target.value.trim();
@@ -327,7 +403,8 @@ function resetEmpForm() {
   empForm.reset();
   document.getElementById('emp-id-label').textContent = 'מספר תעודת זהות';
   document.getElementById('emp-submit-btn').textContent = 'שמירה';
-  ['emp-id-msg', 'emp-first-name-en-msg', 'emp-last-name-en-msg', 'emp-email-msg', 'emp-zip-msg'].forEach(clearMsg);
+  ['emp-id-msg', 'emp-first-name-en-msg', 'emp-last-name-en-msg', 'emp-email-msg', 'emp-zip-msg',
+    'emp-mobile-msg', 'emp-start-date-msg', 'emp-end-date-msg'].forEach(clearMsg);
 }
 
 document.getElementById('new-emp-btn').addEventListener('click', () => {
@@ -361,8 +438,8 @@ function openEditEmp(id) {
   document.getElementById('emp-apartment').value = e.apartment || '';
   document.getElementById('emp-entrance').value = e.entrance || '';
   document.getElementById('emp-zip').value = e.zip_code || '';
-  document.getElementById('emp-start-date').value = e.employment_start_date || '';
-  document.getElementById('emp-end-date').value = e.employment_end_date || '';
+  document.getElementById('emp-start-date').value = e.employment_start_date ? formatDDMMYYYY(fromIsoDate(e.employment_start_date)) : '';
+  document.getElementById('emp-end-date').value = e.employment_end_date ? formatDDMMYYYY(fromIsoDate(e.employment_end_date)) : '';
   document.getElementById('emp-city-code').value = e.city_code || '';
   document.getElementById('emp-city-search').value = '';
   if (e.city_code) {
@@ -385,8 +462,12 @@ const EMP_ERROR_MSGS = {
   'apartment must contain digits only': 'Apartment number must contain digits only',
   'zipCode must be exactly 7 digits': 'Zip code must be exactly 7 digits',
   'invalid email address': 'Invalid email address',
+  'invalid mobile number': 'Invalid mobile number (example: 050-1234567)',
   'firstNameEn must contain English letters only': 'First name (English) must contain English letters only',
   'lastNameEn must contain English letters only': 'Last name (English) must contain English letters only',
+  'employmentStartDate is required': 'Start date is required',
+  'invalid employmentStartDate': 'Invalid start date',
+  'invalid employmentEndDate': 'Invalid end date',
   'idNumber is required': 'יש להזין מספר מזהה',
   'invalid Israeli ID number': 'מספר תעודת הזהות אינו תקין',
   'subOrgId is required because this organization has sub-organizations': 'חובה לבחור תת-ארגון',
@@ -394,11 +475,32 @@ const EMP_ERROR_MSGS = {
   'not authorized for this sub-organization': 'אין הרשאה לתת-הארגון הזה'
 };
 
+function parseDisplayedDateToIso(inputId) {
+  const raw = document.getElementById(inputId).value.trim();
+  if (!raw) return null;
+  const parsed = parseFreeformDate(raw);
+  return parsed ? toIsoDate(parsed) : 'INVALID';
+}
+
 empForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const msg = document.getElementById('emp-form-msg');
   msg.textContent = '';
   msg.className = 'form-msg';
+
+  const startDateIso = parseDisplayedDateToIso('emp-start-date');
+  const endDateIso = parseDisplayedDateToIso('emp-end-date');
+  if (startDateIso === 'INVALID' || !startDateIso) {
+    msg.textContent = 'Start date is required (DD/MM/YYYY)';
+    msg.className = 'form-msg error';
+    return;
+  }
+  if (endDateIso === 'INVALID') {
+    msg.textContent = 'Invalid end date';
+    msg.className = 'form-msg error';
+    return;
+  }
+
   const body = {
     idType: document.getElementById('emp-id-type').value,
     idNumber: document.getElementById('emp-id-number').value.trim(),
@@ -414,8 +516,8 @@ empForm.addEventListener('submit', async (e) => {
     apartment: document.getElementById('emp-apartment').value.trim(),
     entrance: document.getElementById('emp-entrance').value.trim(),
     zipCode: document.getElementById('emp-zip').value.trim(),
-    employmentStartDate: document.getElementById('emp-start-date').value || null,
-    employmentEndDate: document.getElementById('emp-end-date').value || null,
+    employmentStartDate: startDateIso,
+    employmentEndDate: endDateIso,
     subOrgId: subOrgsCache.length ? Number(document.getElementById('emp-sub-org').value) : null
   };
   try {
