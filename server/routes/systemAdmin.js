@@ -9,6 +9,7 @@ const {
   requireSystemAdmin
 } = require('../auth');
 const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin, ADMIN_TYPES } = require('../orgAdmins');
+const { chatWithAgreementExpert } = require('../agreementExpert');
 
 const router = express.Router();
 
@@ -444,6 +445,22 @@ router.delete('/agreements/:code', asyncHandler(async (req, res) => {
   const del = await pool.query('DELETE FROM attendance_agreements WHERE code = $1', [req.params.code]);
   if (del.rowCount === 0) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true });
+}));
+
+// AI-assisted agreement definition: a stateless chat helper for the "new agreement" form in
+// agreements.html. Never writes to the DB itself - it only proposes field values for the admin
+// to review and save through the existing POST/PUT /agreements routes above.
+router.post('/agreements/ai-chat', asyncHandler(async (req, res) => {
+  const { messages } = req.body || {};
+  if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages is required' });
+  if (messages.length > 40) return res.status(400).json({ error: 'conversation too long' });
+  try {
+    const result = await chatWithAgreementExpert(messages);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'not_configured') return res.status(503).json({ error: 'AI assistant is not configured (missing GEMINI_API_KEY)' });
+    res.status(502).json({ error: err.message || 'AI service error' });
+  }
 }));
 
 /* ---------- report types (product-level catalog) ---------- */

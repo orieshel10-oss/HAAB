@@ -23,6 +23,27 @@
       <div class="admin-section-head">
         <h2>קטלוג הסכמים</h2>
         <button class="btn btn-primary btn-small" id="new-agr-btn">+ הסכם חדש</button>
+        <button class="btn btn-secondary btn-small" id="ai-assist-btn">יצירה עם עוזר AI</button>
+      </div>
+
+      <div class="ai-chat-panel hidden" id="ai-chat-panel">
+        <div class="ai-chat-head">
+          <h3>עוזר AI להגדרת הסכם</h3>
+          <button type="button" class="btn btn-secondary btn-small" id="ai-chat-close-btn">סגירה</button>
+        </div>
+        <div class="ai-chat-messages" id="ai-chat-messages"></div>
+        <div class="ai-chat-summary hidden" id="ai-chat-summary">
+          <div id="ai-chat-summary-text"></div>
+          <button type="button" class="btn btn-primary btn-small" id="ai-chat-fill-btn">מילוי הטופס</button>
+        </div>
+        <div class="ai-chat-input-row">
+          <textarea id="ai-chat-input" rows="2" placeholder="תארו את ההסכם, ושוחחו עם העוזר..."></textarea>
+          <div class="ai-chat-actions">
+            <button type="button" class="btn btn-primary btn-small" id="ai-chat-send-btn">שליחה</button>
+            <button type="button" class="btn btn-secondary btn-small" id="ai-chat-finish-btn">סיום השיחה וגזירת השדות</button>
+          </div>
+        </div>
+        <div class="form-msg error" id="ai-chat-msg"></div>
       </div>
       <table class="admin-table">
         <thead><tr><th>קוד</th><th>שם</th><th>תקן יום</th><th>יום מקוצר</th><th>יום מנוחה</th><th></th><th></th></tr></thead>
@@ -207,6 +228,96 @@ agrForm.addEventListener('submit', async (e) => {
     msg.textContent = AGR_ERROR_MSGS[err.message] || err.message;
     msg.className = 'form-msg error';
   }
+});
+
+/* ---------- AI assistant chat (create-flow only: proposes field values, never saves directly) ---------- */
+let aiMessages = [];
+let aiBusy = false;
+
+function renderAiMessages() {
+  const box = document.getElementById('ai-chat-messages');
+  box.innerHTML = aiMessages.map(m => `<div class="ai-msg ai-msg-${m.role}">${m.text.replace(/</g, '&lt;')}</div>`).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+function openAiChat() {
+  agrForm.classList.add('hidden');
+  resetAgrForm();
+  document.getElementById('ai-chat-panel').classList.remove('hidden');
+  document.getElementById('ai-chat-summary').classList.add('hidden');
+  document.getElementById('ai-chat-msg').textContent = '';
+  const seeded = document.getElementById('agr-prompt').value.trim();
+  aiMessages = seeded ? [{ role: 'user', text: seeded }] : [];
+  renderAiMessages();
+  if (seeded) sendAiTurn();
+}
+
+document.getElementById('ai-assist-btn').addEventListener('click', openAiChat);
+document.getElementById('ai-chat-close-btn').addEventListener('click', () => {
+  document.getElementById('ai-chat-panel').classList.add('hidden');
+});
+
+async function sendAiTurn() {
+  if (aiBusy) return;
+  aiBusy = true;
+  const msg = document.getElementById('ai-chat-msg');
+  msg.textContent = '';
+  try {
+    const result = await api('/api/system/agreements/ai-chat', { method: 'POST', body: JSON.stringify({ messages: aiMessages }) });
+    aiMessages.push({ role: 'model', text: result.reply });
+    renderAiMessages();
+    const summaryBox = document.getElementById('ai-chat-summary');
+    if (result.summary) {
+      window.__aiSummary = result.summary;
+      document.getElementById('ai-chat-summary-text').textContent =
+        `תקן יום: ${minutesToHHMM(result.summary.dayStandardMinutes)} | יום מקוצר: ${minutesToHHMM(result.summary.shortenedDayStandardMinutes)} | ` +
+        `יום מנוחה: ${['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'][result.summary.weeklyRestDay]} | ` +
+        `ימי עבודה: ${result.summary.workdaysPerWeek} | לוח חגים: ${HOLIDAY_CAL_LABELS[result.summary.holidayCalendar]}`;
+      summaryBox.classList.remove('hidden');
+    } else {
+      summaryBox.classList.add('hidden');
+    }
+  } catch (err) {
+    msg.textContent = err.message || 'שגיאה בפנייה לעוזר ה-AI';
+  } finally {
+    aiBusy = false;
+  }
+}
+
+document.getElementById('ai-chat-send-btn').addEventListener('click', () => {
+  const input = document.getElementById('ai-chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  aiMessages.push({ role: 'user', text });
+  input.value = '';
+  renderAiMessages();
+  sendAiTurn();
+});
+document.getElementById('ai-chat-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById('ai-chat-send-btn').click();
+  }
+});
+document.getElementById('ai-chat-finish-btn').addEventListener('click', () => {
+  aiMessages.push({ role: 'user', text: 'אני מוכן - אנא סכם את מה שלמדת גם אם חסר מידע, והשתמש בברירות מחדל סבירות במקומות חסרים.' });
+  renderAiMessages();
+  sendAiTurn();
+});
+document.getElementById('ai-chat-fill-btn').addEventListener('click', () => {
+  const s = window.__aiSummary;
+  if (!s) return;
+  document.getElementById('ai-chat-panel').classList.add('hidden');
+  resetAgrForm();
+  document.getElementById('agr-day-standard').value = minutesToHHMM(s.dayStandardMinutes);
+  document.getElementById('agr-short-standard').value = minutesToHHMM(s.shortenedDayStandardMinutes);
+  document.getElementById('agr-rest-day').value = s.weeklyRestDay;
+  document.getElementById('agr-workdays').value = s.workdaysPerWeek;
+  document.getElementById('agr-holiday-calendar').value = s.holidayCalendar;
+  const transcript = aiMessages.filter(m => m.role === 'user').map(m => m.text).join('\n');
+  document.getElementById('agr-prompt').value = transcript;
+  agrForm.classList.remove('hidden');
+  agrForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
 
 /* ---------- init ---------- */
