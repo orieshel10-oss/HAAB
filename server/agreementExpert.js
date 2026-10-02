@@ -15,7 +15,7 @@ const SYSTEM_PROMPT = `אתה עוזר AI המתמחה בהגדרת הסכמי �
 
 עליך לברר בשיחה, בעברית, בטון ידידותי ותכליתי:
 - כמה שעות עבודה התקן ביום רגיל.
-- כמה שעות עבודה התקן ביום מקוצר (למשל ערב שבת/חג).
+- כמה שעות עבודה התקן ביום מקוצר (למשל ערב שבת/חג). שים לב: שדה זה חייב להיות מספר דקות חיובי במערכת - אם המשתמש אומר שאין אצלו בכלל מושג של "יום מקוצר", אל תשתמש ב-0; השתמש באותו ערך כמו תקן היום הרגיל (כלומר, כל הימים נחשבים "יום רגיל" מבחינת שעות).
 - מהו יום המנוחה השבועי (בדרך כלל שבת, אך יכול להיות שונה).
 - כמה ימי עבודה יש בשבוע.
 - לאיזה לוח חגים ההסכם מקושר: יהודי, נוצרי, מוסלמי, או ללא לוח חגים מיוחד.
@@ -62,7 +62,11 @@ function parseReply(text) {
   } catch (e) {
     parsed = null;
   }
-  return { reply: before, summary: validateSummary(parsed) };
+  const summary = validateSummary(parsed);
+  // The model attempted a summary but it didn't pass validation (bad/missing field) - distinct
+  // from an ordinary mid-conversation turn that never tried, so the UI can say so instead of
+  // silently looking like nothing happened.
+  return { reply: before, summary, summaryFailed: !summary };
 }
 
 async function chatWithAgreementExpert(messages) {

@@ -276,6 +276,9 @@ async function sendAiTurn() {
       summaryBox.classList.remove('hidden');
     } else {
       summaryBox.classList.add('hidden');
+      if (result.summaryFailed) {
+        msg.textContent = 'העוזר ניסה לסכם אך משהו בנתונים לא תקין - אפשר לנסח מחדש או ללחוץ שוב על "סיום השיחה"';
+      }
     }
   } catch (err) {
     msg.textContent = err.message || 'שגיאה בפנייה לעוזר ה-AI';
