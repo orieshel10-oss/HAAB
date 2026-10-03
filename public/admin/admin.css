@@ -273,3 +273,6 @@ body { background: var(--bg); }
   resize: vertical;
 }
 .ai-chat-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: space-between; }
+
+.advanced-fields-list { margin-top: 4px; font-size: 11px; color: var(--text-muted); display: flex; flex-direction: column; gap: 2px; }
+.admin-table details summary { cursor: pointer; font-size: 12px; color: var(--brand-dark); }

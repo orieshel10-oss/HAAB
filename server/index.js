@@ -29,6 +29,11 @@ const {
   splitDayMinutes,
   standardDayMinutes
 } = require('./attendance');
+const {
+  resolveDayPlan,
+  computeAverageRegularMinutes,
+  standardMinutesForDay
+} = require('./agreementRules');
 
 const app = express();
 app.use(express.json());
@@ -230,8 +235,70 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     .sort((a, b) => new Date(a.inTs) - new Date(b.inTs));
   const groups = groupSessionsIntoRows(allSessions);
 
+  // Full agreement row (not just holiday_calendar) so the engine below can actually apply its
+  // own standard/rest-day/break/OT/night/holiday rules - an employee with no agreement_code
+  // keeps using the plain generic rule (dayTypeFromDate/splitDayMinutes) unchanged.
+  const { rows: empRows } = await pool.query(
+    `SELECT e.employment_start_date, aa.* FROM employees e
+     LEFT JOIN attendance_agreements aa ON aa.code = e.agreement_code
+     WHERE e.id = $1`,
+    [req.session.employeeId]
+  );
+  const employmentStartDate = empRows[0] ? empRows[0].employment_start_date : null;
+  const agreement = empRows[0] && empRows[0].code ? empRows[0] : null;
+  const holidayCalendar = agreement ? agreement.holiday_calendar : null;
+
+  let holidaySet = new Set();
+  let holidayEveSet = new Set();
+  if (holidayCalendar && holidayCalendar !== 'none') {
+    const { rows: holidayRows } = await pool.query(
+      'SELECT date, is_eve FROM holidays WHERE calendar_type = $1 AND date BETWEEN $2 AND $3',
+      [holidayCalendar, start, end]
+    );
+    holidaySet = new Set(holidayRows.filter((h) => !h.is_eve).map((h) => h.date));
+    holidayEveSet = new Set(holidayRows.filter((h) => h.is_eve).map((h) => h.date));
+  }
+  const restDow = calendarRestDow(holidayCalendar);
+
+  // "Employer-approved absence" for holiday eligibility: an absence-category report that day,
+  // excluding unpaid leave (not paid/approved in the same sense). See Phase 4c plan notes for
+  // this interpretive choice.
+  let approvedAbsenceDates = new Set();
+  if (agreement && agreement.holiday_pay_seniority_months) {
+    const { rows: absenceRows } = await pool.query(
+      `SELECT DISTINCT ar.date FROM attendance_reports ar
+       JOIN report_types rt ON rt.code = ar.type
+       WHERE ar.employee_id = $1 AND ar.date BETWEEN $2 AND $3
+         AND rt.category = 'absence' AND rt.code != 'unpaid'`,
+      [req.session.employeeId, start, end]
+    );
+    approvedAbsenceDates = new Set(absenceRows.map((r) => r.date));
+  }
+
+  // Computed once per request (not once per holiday in the month) when the agreement actually
+  // uses the trailing-average holiday-pay rule.
+  let holidayAverageRegularMinutes = null;
+  if (agreement && agreement.holiday_pay_averaging_months) {
+    holidayAverageRegularMinutes = await computeAverageRegularMinutes(
+      pool, req.session.employeeId, start, agreement.holiday_pay_averaging_months, agreement
+    );
+  }
+
   const rowsByDate = {};
   for (const group of groups) {
+    if (agreement) {
+      const plan = resolveDayPlan({
+        agreement,
+        group,
+        isHoliday: holidaySet.has(group.date),
+        isHolidayEve: holidayEveSet.has(group.date),
+        hasApprovedAbsence: approvedAbsenceDates.has(group.date),
+        employmentStartDate,
+        holidayAverageRegularMinutes
+      });
+      (rowsByDate[group.date] = rowsByDate[group.date] || []).push(...plan.rows);
+      continue;
+    }
     const dayType = dayTypeFromDate(...group.date.split('-').map(Number));
     const totalMinutes = group.sessions.reduce((sum, s) => sum + (new Date(s.outTs) - new Date(s.inTs)) / 60000, 0);
     const split = splitDayMinutes(Math.round(totalMinutes), dayType);
@@ -257,38 +324,20 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     (rowsByDate[ds] = rowsByDate[ds] || []).push(...openRows);
   });
   Object.entries(wholeDayReportsByDate).forEach(([ds, reports]) => {
-    const dayType = dayTypeFromDate(...ds.split('-').map(Number));
+    const [y, m, d] = ds.split('-').map(Number);
+    const standardMinutes = agreement
+      ? standardMinutesForDay({ agreement, weekday: new Date(y, m - 1, d).getDay(), isHolidayEve: holidayEveSet.has(ds) })
+      : standardDayMinutes(dayTypeFromDate(y, m, d));
     const wholeDayRows = reports.map((r) => ({
       firstIn: null,
       lastOut: null,
       type: r.type,
       note: r.note,
-      minutes: { regular: standardDayMinutes(dayType), ot125: 0, ot150: 0, shabbat: 0 },
+      minutes: { regular: standardMinutes, ot125: 0, ot150: 0, shabbat: 0 },
       showTotals: true
     }));
     (rowsByDate[ds] = rowsByDate[ds] || []).push(...wholeDayRows);
   });
-
-  // Holiday/eve indicators follow the employee's own agreement's linked holiday calendar (no
-  // agreement, or holiday_calendar='none', means neither is ever shown).
-  const { rows: agreementRows } = await pool.query(
-    `SELECT aa.holiday_calendar FROM employees e
-     JOIN attendance_agreements aa ON aa.code = e.agreement_code
-     WHERE e.id = $1`,
-    [req.session.employeeId]
-  );
-  const holidayCalendar = agreementRows[0] ? agreementRows[0].holiday_calendar : null;
-  let holidaySet = new Set();
-  let holidayEveSet = new Set();
-  if (holidayCalendar && holidayCalendar !== 'none') {
-    const { rows: holidayRows } = await pool.query(
-      'SELECT date, is_eve FROM holidays WHERE calendar_type = $1 AND date BETWEEN $2 AND $3',
-      [holidayCalendar, start, end]
-    );
-    holidaySet = new Set(holidayRows.filter((h) => !h.is_eve).map((h) => h.date));
-    holidayEveSet = new Set(holidayRows.filter((h) => h.is_eve).map((h) => h.date));
-  }
-  const restDow = calendarRestDow(holidayCalendar);
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, absenceCounts: {} };
@@ -321,13 +370,14 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       if (r.type && r.type !== 'attendance') totals.absenceCounts[r.type] = (totals.absenceCounts[r.type] || 0) + 1;
     });
 
+    const effectiveRestDow = agreement ? agreement.weekly_rest_day : restDow;
     days.push({
       date: ds,
       weekday,
       dayType,
       isHoliday,
       isHolidayEve: holidayEveSet.has(ds),
-      isDayOff: weekday === restDow || isHoliday,
+      isDayOff: weekday === effectiveRestDow || isHoliday,
       rows
     });
   }

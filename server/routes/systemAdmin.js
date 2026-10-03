@@ -388,6 +388,40 @@ router.get('/agreements', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const isPositiveIntInDay = (v) => Number.isInteger(v) && v > 0 && v <= 24 * 60;
+
+// Phase 4c advanced fields: all optional. Present-but-invalid rejects the whole request (same
+// strict contract the AI-chat validator already uses); omitted keeps the column's existing value
+// on an UPDATE (via COALESCE below) or its DB default on INSERT. There is currently no way to
+// explicitly clear an advanced field back to "unset" once set - a known, documented limitation
+// (the AI's "full snapshot" convention means a field it decides is no longer relevant is simply
+// omitted from its next summary, not nulled - clearing would need an explicit future affordance).
+const ADVANCED_FIELD_CHECKS = {
+  breakMinutes: (v) => Number.isInteger(v) && v >= 0 && v < 24 * 60,
+  otTier1Minutes: (v) => Number.isInteger(v) && v > 0 && v < 24 * 60,
+  otTier1Rate: (v) => typeof v === 'number' && v > 0 && v < 10,
+  otTier2Rate: (v) => typeof v === 'number' && v > 0 && v < 10,
+  nightStartTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
+  nightEndTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
+  nightMinOverlapMinutes: (v) => Number.isInteger(v) && v > 0 && v < 24 * 60,
+  nightStandardMinutes: (v) => isPositiveIntInDay(v),
+  shortWeekday: (v) => Number.isInteger(v) && v >= 0 && v <= 6,
+  shortWeekdayStandardMinutes: (v) => isPositiveIntInDay(v),
+  weeklyRestEntryTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
+  shabbatPremiumRate: (v) => typeof v === 'number' && v > 0 && v < 10,
+  holidayPaySeniorityMonths: (v) => Number.isInteger(v) && v >= 0 && v <= 120,
+  holidayPayAveragingMonths: (v) => Number.isInteger(v) && v > 0 && v <= 36
+};
+const ADVANCED_FIELD_COLUMNS = {
+  breakMinutes: 'break_minutes', otTier1Minutes: 'ot_tier1_minutes', otTier1Rate: 'ot_tier1_rate',
+  otTier2Rate: 'ot_tier2_rate', nightStartTime: 'night_start_time', nightEndTime: 'night_end_time',
+  nightMinOverlapMinutes: 'night_min_overlap_minutes', nightStandardMinutes: 'night_standard_minutes',
+  shortWeekday: 'short_weekday', shortWeekdayStandardMinutes: 'short_weekday_standard_minutes',
+  weeklyRestEntryTime: 'weekly_rest_entry_time', shabbatPremiumRate: 'shabbat_premium_rate',
+  holidayPaySeniorityMonths: 'holiday_pay_seniority_months', holidayPayAveragingMonths: 'holiday_pay_averaging_months'
+};
+
 function validateAgreementBody(body) {
   const { code, name, dayStandardMinutes, shortenedDayStandardMinutes, weeklyRestDay, workdaysPerWeek, holidayCalendar } = body || {};
   if (!/^[A-Za-z0-9]{4}$/.test(code || '')) return { status: 400, error: 'code must be exactly 4 alphanumeric characters' };
@@ -398,19 +432,59 @@ function validateAgreementBody(body) {
   if (!Number.isInteger(workdaysPerWeek) || workdaysPerWeek < 1 || workdaysPerWeek > 7) return { status: 400, error: 'workdaysPerWeek must be 1-7' };
   if (!HOLIDAY_CALENDARS.includes(holidayCalendar)) return { status: 400, error: `holidayCalendar must be one of ${HOLIDAY_CALENDARS.join(', ')}` };
   if (body.promptText && body.promptText.length > 4000) return { status: 400, error: 'promptText must be at most 4000 characters' };
-  return { data: { code, name, description: body.description || null, dayStandardMinutes, shortenedDayStandardMinutes, weeklyRestDay, workdaysPerWeek, holidayCalendar, promptText: body.promptText || null } };
+
+  const advanced = {};
+  for (const [key, check] of Object.entries(ADVANCED_FIELD_CHECKS)) {
+    if (body[key] === undefined || body[key] === null) { advanced[key] = null; continue; }
+    if (!check(body[key])) return { status: 400, error: `${key} is invalid` };
+    advanced[key] = body[key];
+  }
+
+  let additionalFields = null;
+  if (body.additionalFields !== undefined && body.additionalFields !== null) {
+    if (typeof body.additionalFields !== 'object' || Array.isArray(body.additionalFields)) {
+      return { status: 400, error: 'additionalFields must be an object' };
+    }
+    for (const entry of Object.values(body.additionalFields)) {
+      if (!entry || typeof entry !== 'object' || typeof entry.label !== 'string') {
+        return { status: 400, error: 'additionalFields entries must have a label' };
+      }
+    }
+    additionalFields = body.additionalFields;
+  }
+
+  return {
+    data: {
+      code, name, description: body.description || null, dayStandardMinutes, shortenedDayStandardMinutes,
+      weeklyRestDay, workdaysPerWeek, holidayCalendar, promptText: body.promptText || null, advanced, additionalFields
+    }
+  };
 }
 
 router.post('/agreements', asyncHandler(async (req, res) => {
   const validation = validateAgreementBody(req.body);
   if (validation.error) return res.status(validation.status).json({ error: validation.error });
   const d = validation.data;
+  const advancedKeys = Object.keys(ADVANCED_FIELD_COLUMNS);
+  const advancedCols = advancedKeys.map((k) => ADVANCED_FIELD_COLUMNS[k]).join(', ');
+  // breakMinutes/shabbatPremiumRate are NOT NULL columns with defaults - an omitted value here
+  // (null parameter) must fall back to that default, not a bare NULL insert.
+  const INSERT_DEFAULTS = { breakMinutes: '0', shabbatPremiumRate: '1.5' };
+  const advancedPlaceholders = advancedKeys
+    .map((k, i) => (INSERT_DEFAULTS[k] ? `COALESCE($${11 + i}, ${INSERT_DEFAULTS[k]})` : `$${11 + i}`))
+    .join(', ');
   try {
     const { rows } = await pool.query(
       `INSERT INTO attendance_agreements
-         (code, name, description, day_standard_minutes, shortened_day_standard_minutes, weekly_rest_day, workdays_per_week, holiday_calendar, prompt_text, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [d.code, d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, d.promptText, req.session.systemAdminId]
+         (code, name, description, day_standard_minutes, shortened_day_standard_minutes, weekly_rest_day, workdays_per_week, holiday_calendar, prompt_text, created_by, ${advancedCols}, extra_fields)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, ${advancedPlaceholders}, COALESCE($${11 + advancedKeys.length}::jsonb, '{}'))
+       RETURNING *`,
+      [
+        d.code, d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay,
+        d.workdaysPerWeek, d.holidayCalendar, d.promptText, req.session.systemAdminId,
+        ...advancedKeys.map((k) => d.advanced[k]),
+        d.additionalFields ? JSON.stringify(d.additionalFields) : null
+      ]
     );
     res.json(rows[0]);
   } catch (err) {
@@ -423,11 +497,26 @@ router.put('/agreements/:code', asyncHandler(async (req, res) => {
   const validation = validateAgreementBody({ ...req.body, code: req.params.code });
   if (validation.error) return res.status(validation.status).json({ error: validation.error });
   const d = validation.data;
+  const advancedKeys = Object.keys(ADVANCED_FIELD_COLUMNS);
+  // COALESCE($n, column) - an omitted advanced field (null parameter) leaves the existing value
+  // untouched instead of overwriting it, so a plain manual-form save (which never sends these
+  // keys) can't wipe out rules the AI chat previously set.
+  const advancedSet = advancedKeys
+    .map((k, i) => `${ADVANCED_FIELD_COLUMNS[k]} = COALESCE($${9 + i}, ${ADVANCED_FIELD_COLUMNS[k]})`)
+    .join(', ');
+  const extraFieldsParamIdx = 9 + advancedKeys.length;
   const { rows } = await pool.query(
     `UPDATE attendance_agreements SET name=$1, description=$2, day_standard_minutes=$3,
-       shortened_day_standard_minutes=$4, weekly_rest_day=$5, workdays_per_week=$6, holiday_calendar=$7, prompt_text=$8
-     WHERE code = $9 RETURNING *`,
-    [d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay, d.workdaysPerWeek, d.holidayCalendar, d.promptText, req.params.code]
+       shortened_day_standard_minutes=$4, weekly_rest_day=$5, workdays_per_week=$6, holiday_calendar=$7, prompt_text=$8,
+       ${advancedSet}, extra_fields = extra_fields || COALESCE($${extraFieldsParamIdx}::jsonb, '{}')
+     WHERE code = $${extraFieldsParamIdx + 1} RETURNING *`,
+    [
+      d.name, d.description, d.dayStandardMinutes, d.shortenedDayStandardMinutes, d.weeklyRestDay,
+      d.workdaysPerWeek, d.holidayCalendar, d.promptText,
+      ...advancedKeys.map((k) => d.advanced[k]),
+      d.additionalFields ? JSON.stringify(d.additionalFields) : null,
+      req.params.code
+    ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(rows[0]);

@@ -140,6 +140,25 @@ async function init() {
     -- flow to consume later - not processed/analyzed yet, just captured.
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS prompt_text TEXT;
 
+    -- Phase 4c: advanced rule fields the AI edit/create chat can set, consumed by
+    -- server/agreementRules.js. All nullable/defaulted so an agreement that never sets them
+    -- computes exactly as before (the plain generic rule in server/attendance.js).
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS break_minutes INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS ot_tier1_minutes INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS ot_tier1_rate NUMERIC;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS ot_tier2_rate NUMERIC;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS night_start_time TEXT;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS night_end_time TEXT;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS night_min_overlap_minutes INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS night_standard_minutes INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS short_weekday INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS short_weekday_standard_minutes INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS weekly_rest_entry_time TEXT;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS shabbat_premium_rate NUMERIC NOT NULL DEFAULT 1.5;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS holiday_pay_seniority_months INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS holiday_pay_averaging_months INTEGER;
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS extra_fields JSONB NOT NULL DEFAULT '{}';
+
     -- Whitelist: which catalog agreements a given org may actually assign to its employees.
     -- effective_from/effective_until (nullable) further restrict *when* within that whitelisting
     -- the agreement can actually be assigned to an employee - both null means no restriction.

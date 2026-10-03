@@ -46,8 +46,8 @@
         <div class="form-msg error" id="ai-chat-msg"></div>
       </div>
       <table class="admin-table">
-        <thead><tr><th>קוד</th><th>שם</th><th>תקן יום</th><th>יום מקוצר</th><th>יום מנוחה</th><th></th><th></th></tr></thead>
-        <tbody id="agr-tbody"><tr class="empty-row"><td colspan="7">טוען...</td></tr></tbody>
+        <thead><tr><th>קוד</th><th>שם</th><th>תקן יום</th><th>יום מקוצר</th><th>יום מנוחה</th><th></th><th></th><th></th></tr></thead>
+        <tbody id="agr-tbody"><tr class="empty-row"><td colspan="8">טוען...</td></tr></tbody>
       </table>
 
       <form class="admin-form hidden" id="agr-form">
@@ -120,6 +120,37 @@ function hhmmToMinutes(s) {
   return h * 60 + min;
 }
 
+// Short human labels for the advanced (Phase 4c) fields, used only to render the read-only
+// summary panel - these fields have no raw-input counterparts in the manual form, they're
+// AI-chat-managed only (see ADVANCED_FIELD_LABELS usage in renderAdvancedSummary below).
+const ADVANCED_FIELD_LABELS = {
+  break_minutes: 'הפסקה (דק\')', ot_tier1_minutes: 'מדרגה 1 (דק\')', ot_tier1_rate: 'שיעור מדרגה 1',
+  ot_tier2_rate: 'שיעור מדרגה 2', night_start_time: 'תחילת לילה', night_end_time: 'סוף לילה',
+  night_min_overlap_minutes: 'חפיפת לילה מינ\' (דק\')', night_standard_minutes: 'תקן לילה (דק\')',
+  short_weekday: 'יום קצר קבוע', short_weekday_standard_minutes: 'תקן יום קצר (דק\')',
+  weekly_rest_entry_time: 'כניסת יום מנוחה', shabbat_premium_rate: 'שיעור תוספת מנוחה',
+  holiday_pay_seniority_months: 'ותק לזכאות חג (חוד\')', holiday_pay_averaging_months: 'חלון ממוצע חג (חוד\')'
+};
+const WEEKDAY_NAMES = ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
+
+function renderAdvancedSummary(a) {
+  const parts = [];
+  for (const [col, label] of Object.entries(ADVANCED_FIELD_LABELS)) {
+    const v = a[col];
+    if (v === null || v === undefined) continue;
+    if (col === 'break_minutes' && v === 0) continue;
+    if (col === 'short_weekday') { parts.push(`${label}: ${WEEKDAY_NAMES[v]}`); continue; }
+    parts.push(`${label}: ${v}`);
+  }
+  const extra = a.extra_fields && Object.keys(a.extra_fields).length
+    ? Object.values(a.extra_fields).map(f => `${f.label}: ${f.value}`)
+    : [];
+  if (!parts.length && !extra.length) return '<span class="field-msg">אין כללים מתקדמים</span>';
+  return `<details><summary>${parts.length + extra.length} כללים</summary><div class="advanced-fields-list">${
+    [...parts, ...extra].map(p => `<div>${p}</div>`).join('')
+  }</div></details>`;
+}
+
 async function loadAgreements() {
   agrCache = await api('/api/system/agreements');
   const tbody = document.getElementById('agr-tbody');
@@ -129,12 +160,17 @@ async function loadAgreements() {
       <td>${a.name}</td>
       <td>${minutesToHHMM(a.day_standard_minutes)}</td>
       <td>${minutesToHHMM(a.shortened_day_standard_minutes)}</td>
-      <td>${['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'][a.weekly_rest_day]}</td>
-      <td><button class="btn btn-secondary btn-small edit-agr-btn" data-code="${a.code}">עריכה</button></td>
+      <td>${WEEKDAY_NAMES[a.weekly_rest_day]}</td>
+      <td>${renderAdvancedSummary(a)}</td>
+      <td>
+        <button class="btn btn-secondary btn-small edit-agr-btn" data-code="${a.code}">עריכה</button>
+        <button class="btn btn-secondary btn-small edit-ai-btn" data-code="${a.code}">עריכה עם AI</button>
+      </td>
       <td><button class="btn btn-danger btn-small del-agr-btn" data-code="${a.code}">מחיקה</button></td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="7">אין עדיין הסכמים</td></tr>';
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="8">אין עדיין הסכמים</td></tr>';
 
   tbody.querySelectorAll('.edit-agr-btn').forEach(btn => btn.addEventListener('click', () => openEditAgr(btn.dataset.code)));
+  tbody.querySelectorAll('.edit-ai-btn').forEach(btn => btn.addEventListener('click', () => openAiChat(btn.dataset.code)));
   tbody.querySelectorAll('.del-agr-btn').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm(`למחוק את ההסכם ${btn.dataset.code}?`)) return;
     try {
@@ -158,6 +194,9 @@ function resetAgrForm() {
   document.getElementById('agr-submit-btn').textContent = 'שמירה';
   document.getElementById('agr-rest-day').value = '6';
   document.getElementById('agr-workdays').value = '6';
+  window.__aiAdvancedFields = null;
+  window.__aiAdditionalFields = null;
+  window.__aiDocument = null;
 }
 document.getElementById('new-agr-btn').addEventListener('click', () => {
   if (!agrForm.classList.contains('hidden') && editingCode === null) { agrForm.classList.add('hidden'); return; }
@@ -170,6 +209,10 @@ function openEditAgr(code) {
   const a = agrCache.find(x => x.code === code);
   if (!a) return;
   editingCode = code;
+  // Plain "עריכה" entry point - never carries over AI data from a previous, unrelated chat.
+  window.__aiAdvancedFields = null;
+  window.__aiAdditionalFields = null;
+  window.__aiDocument = null;
   document.getElementById('agr-code').value = a.code;
   document.getElementById('agr-code').disabled = true;
   document.getElementById('agr-name').value = a.name;
@@ -212,7 +255,12 @@ agrForm.addEventListener('submit', async (e) => {
     dayStandardMinutes, shortenedDayStandardMinutes,
     weeklyRestDay: Number(document.getElementById('agr-rest-day').value),
     workdaysPerWeek: Number(document.getElementById('agr-workdays').value),
-    holidayCalendar: document.getElementById('agr-holiday-calendar').value
+    holidayCalendar: document.getElementById('agr-holiday-calendar').value,
+    // Advanced fields are AI-chat-managed only (no raw inputs in this form) - whatever the AI
+    // assistant most recently derived rides along with the save; a plain manual-only save never
+    // touches these (the globals are null unless an AI chat ran earlier this session).
+    ...(window.__aiAdvancedFields || {}),
+    ...(window.__aiAdditionalFields ? { additionalFields: window.__aiAdditionalFields } : {})
   };
   try {
     if (editingCode) {
@@ -230,7 +278,7 @@ agrForm.addEventListener('submit', async (e) => {
   }
 });
 
-/* ---------- AI assistant chat (create-flow only: proposes field values, never saves directly) ---------- */
+/* ---------- AI assistant chat (create AND edit - proposes field values, never saves directly) ---------- */
 let aiMessages = [];
 let aiBusy = false;
 
@@ -240,22 +288,63 @@ function renderAiMessages() {
   box.scrollTop = box.scrollHeight;
 }
 
-function openAiChat() {
+// Turns an existing agreement row into the Hebrew "here's what's already defined" description
+// that seeds edit-mode conversations - the system prompt is instructed to treat a conversation
+// that opens with this as an edit, preserving anything the admin doesn't ask to change.
+function describeAgreementForAi(a) {
+  const lines = [`הסכם קיים בשם "${a.name}" (קוד ${a.code}).`];
+  lines.push(`תקן יום רגיל: ${minutesToHHMM(a.day_standard_minutes)}, תקן יום מקוצר: ${minutesToHHMM(a.shortened_day_standard_minutes)}.`);
+  lines.push(`יום מנוחה שבועי: ${WEEKDAY_NAMES[a.weekly_rest_day]}, ${a.workdays_per_week} ימי עבודה בשבוע, לוח חגים: ${HOLIDAY_CAL_LABELS[a.holiday_calendar]}.`);
+  for (const [col, label] of Object.entries(ADVANCED_FIELD_LABELS)) {
+    const v = a[col];
+    if (v === null || v === undefined || (col === 'break_minutes' && v === 0)) continue;
+    lines.push(`${label}: ${col === 'short_weekday' ? WEEKDAY_NAMES[v] : v}.`);
+  }
+  if (a.extra_fields && Object.keys(a.extra_fields).length) {
+    lines.push('שדות נוספים: ' + Object.values(a.extra_fields).map(f => `${f.label}: ${f.value}`).join(', ') + '.');
+  }
+  // The free-text description (if the admin wrote/accumulated one, e.g. from before Phase 4c's
+  // structured fields existed) often contains real rules not reflected in the columns above yet -
+  // feed it in so the model can extract from it instead of only from what's already structured.
+  if (a.prompt_text && a.prompt_text.trim()) {
+    lines.push('תיאור חופשי קיים שנכתב בעבר על ההסכם (ייתכן שמכיל כללים שעדיין לא הוגדרו בשדות המובנים למעלה - בדוק אותו וחלץ ממנו כל כלל רלוונטי):');
+    lines.push(a.prompt_text.trim());
+  }
+  lines.push('מה תרצה לשנות או להוסיף?');
+  return lines.join('\n');
+}
+
+function openAiChat(code) {
   agrForm.classList.add('hidden');
-  resetAgrForm();
   document.getElementById('ai-chat-panel').classList.remove('hidden');
   document.getElementById('ai-chat-summary').classList.add('hidden');
   document.getElementById('ai-chat-msg').textContent = '';
+  window.__aiAdvancedFields = null;
+  window.__aiAdditionalFields = null;
+  window.__aiDocument = null;
+
+  if (code) {
+    const a = agrCache.find(x => x.code === code);
+    openEditAgr(code);
+    agrForm.classList.add('hidden');
+    aiMessages = a ? [{ role: 'model', text: describeAgreementForAi(a) }] : [];
+    renderAiMessages();
+    return;
+  }
+
+  resetAgrForm();
   const seeded = document.getElementById('agr-prompt').value.trim();
   aiMessages = seeded ? [{ role: 'user', text: seeded }] : [];
   renderAiMessages();
   if (seeded) sendAiTurn();
 }
 
-document.getElementById('ai-assist-btn').addEventListener('click', openAiChat);
+document.getElementById('ai-assist-btn').addEventListener('click', () => openAiChat());
 document.getElementById('ai-chat-close-btn').addEventListener('click', () => {
   document.getElementById('ai-chat-panel').classList.add('hidden');
 });
+
+const BASIC_SUMMARY_KEYS = ['dayStandardMinutes', 'shortenedDayStandardMinutes', 'weeklyRestDay', 'workdaysPerWeek', 'holidayCalendar'];
 
 async function sendAiTurn() {
   if (aiBusy) return;
@@ -269,10 +358,17 @@ async function sendAiTurn() {
     const summaryBox = document.getElementById('ai-chat-summary');
     if (result.summary) {
       window.__aiSummary = result.summary;
+      window.__aiAdvancedFields = Object.fromEntries(
+        Object.entries(result.summary).filter(([k]) => !BASIC_SUMMARY_KEYS.includes(k) && k !== 'additionalFields')
+      );
+      window.__aiAdditionalFields = result.summary.additionalFields || null;
+      window.__aiDocument = result.document || null;
+      const advancedCount = Object.keys(window.__aiAdvancedFields).length;
       document.getElementById('ai-chat-summary-text').textContent =
         `תקן יום: ${minutesToHHMM(result.summary.dayStandardMinutes)} | יום מקוצר: ${minutesToHHMM(result.summary.shortenedDayStandardMinutes)} | ` +
-        `יום מנוחה: ${['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'][result.summary.weeklyRestDay]} | ` +
-        `ימי עבודה: ${result.summary.workdaysPerWeek} | לוח חגים: ${HOLIDAY_CAL_LABELS[result.summary.holidayCalendar]}`;
+        `יום מנוחה: ${WEEKDAY_NAMES[result.summary.weeklyRestDay]} | ` +
+        `ימי עבודה: ${result.summary.workdaysPerWeek} | לוח חגים: ${HOLIDAY_CAL_LABELS[result.summary.holidayCalendar]}` +
+        (advancedCount ? ` | ${advancedCount} כללים מתקדמים` : '');
       summaryBox.classList.remove('hidden');
     } else {
       summaryBox.classList.add('hidden');
@@ -311,14 +407,16 @@ document.getElementById('ai-chat-fill-btn').addEventListener('click', () => {
   const s = window.__aiSummary;
   if (!s) return;
   document.getElementById('ai-chat-panel').classList.add('hidden');
-  resetAgrForm();
+  // Edit mode already has editingCode set (from openAiChat's openEditAgr call) and the form
+  // primed for that agreement - resetting here would lose that. Create mode starts fresh.
+  if (!editingCode) resetAgrForm();
   document.getElementById('agr-day-standard').value = minutesToHHMM(s.dayStandardMinutes);
   document.getElementById('agr-short-standard').value = minutesToHHMM(s.shortenedDayStandardMinutes);
   document.getElementById('agr-rest-day').value = s.weeklyRestDay;
   document.getElementById('agr-workdays').value = s.workdaysPerWeek;
   document.getElementById('agr-holiday-calendar').value = s.holidayCalendar;
   const transcript = aiMessages.filter(m => m.role === 'user').map(m => m.text).join('\n');
-  document.getElementById('agr-prompt').value = transcript;
+  document.getElementById('agr-prompt').value = window.__aiDocument || transcript;
   agrForm.classList.remove('hidden');
   agrForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
