@@ -361,9 +361,26 @@ html, body {
   color: var(--text-muted);
   font-weight: 700;
 }
+/* Pin the date column (not the weekday column next to it) horizontally, so it stays visible
+   while scrolling right to see the hour-category columns - the header row's own date cell
+   needs a higher z-index so it wins the top-right corner over the sticky column below it. */
+.sheet-table th:first-child, .sheet-table td:first-child {
+  position: sticky;
+  right: 0;
+  background: var(--card-bg);
+  z-index: 1;
+}
+.sheet-table thead th:first-child { z-index: 3; }
 .sheet-table tbody tr { border-bottom: 1px solid var(--border); }
 .sheet-table tbody tr.today { background: rgba(47,111,237,0.08); }
 .sheet-table tbody tr.day-off { background: rgba(47,111,237,0.08); }
+/* Sticky cells must be opaque (scrolling content passes directly underneath them), so the
+   row's own translucent tint can't be reused as-is here - color-mix blends it against the
+   theme's actual card background instead, light or dark. */
+.sheet-table tbody tr.today td:first-child,
+.sheet-table tbody tr.day-off td:first-child {
+  background: color-mix(in srgb, var(--brand) 8%, var(--card-bg));
+}
 .sheet-table td.note-vacation { color: var(--brand-dark); font-weight: 700; }
 .sheet-table td.note-sick { color: var(--red-dark); font-weight: 700; }
 .presence-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: transparent; }
