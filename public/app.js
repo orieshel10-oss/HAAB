@@ -38,6 +38,7 @@ function showScreen(name) {
   document.getElementById(`screen-${name}`).classList.add('active');
   if (name === 'update') { updateCal.refresh(); loadDayPanel(updateCal.getSelectedDate()); }
   if (name === 'sheet') sheetView.refresh();
+  resetIdleTimer();
 }
 
 document.querySelectorAll('[data-nav]').forEach(btn => {
@@ -298,7 +299,11 @@ function openEditor(report) {
   const editor = document.getElementById('day-panel-editor');
   document.getElementById('editor-type').innerHTML = buildTypeOptions(report ? report.type : 'attendance');
   document.getElementById('editor-wholeday').checked = !!(report && !report.entryTs);
-  document.getElementById('editor-entry').value = report && report.entryTs ? fmtTime(report.entryTs) : '';
+  // An empty time input lets some mobile browsers' native picker default its scroll position to
+  // the current clock time, which is irrelevant here (clocking the *actual* current time has its
+  // own buttons on the home screen) - starting from 00:00 instead avoids that. Exit stays empty
+  // by default (not 00:00) since blank there has its own meaning: "exit not known yet".
+  document.getElementById('editor-entry').value = report && report.entryTs ? fmtTime(report.entryTs) : '00:00';
   document.getElementById('editor-exit').value = report && report.exitTs ? fmtTime(report.exitTs) : '';
   const note = document.getElementById('editor-note');
   note.value = (report && report.note) || '';
@@ -420,6 +425,7 @@ function createSheetController() {
           <td><span class="presence-dot ${dotClassForRow(row)}"></span></td>
           <td>${row.firstIn ? fmtTime(row.firstIn) : ''}</td>
           <td>${row.lastOut ? fmtTime(row.lastOut) : ''}</td>
+          <td>${row.firstIn && row.lastOut ? hoursCell(Math.round((new Date(row.lastOut) - new Date(row.firstIn)) / 60000)) : ''}</td>
           <td>${hoursCell(row.minutes.regular)}</td>
           <td>${hoursCell(row.minutes.ot125)}</td>
           <td>${hoursCell(row.minutes.ot150)}</td>
@@ -434,7 +440,7 @@ function createSheetController() {
       .join(', ');
     tfoot.innerHTML = `
       <tr>
-        <td colspan="5">סה"כ${absenceSummary ? ` (${absenceSummary})` : ''}</td>
+        <td colspan="6">סה"כ${absenceSummary ? ` (${absenceSummary})` : ''}</td>
         <td>${hoursCell(data.totals.regular)}</td>
         <td>${hoursCell(data.totals.ot125)}</td>
         <td>${hoursCell(data.totals.ot150)}</td>
@@ -561,7 +567,8 @@ employeeLoginForm.addEventListener('submit', async (e) => {
     if (!res.ok) { msg.textContent = 'פרטי התחברות שגויים'; return; }
     const loginData = await res.json();
     localStorage.setItem(EMPLOYEE_ID_STORAGE_KEY, idNumber);
-    if (loginData.firstName) localStorage.setItem(EMPLOYEE_NAME_STORAGE_KEY, loginData.firstName);
+    const fullName = [loginData.firstName, loginData.lastName].filter(Boolean).join(' ');
+    if (fullName) localStorage.setItem(EMPLOYEE_NAME_STORAGE_KEY, fullName);
     employeeLoginForm.reset();
     await loadReportTypes();
     showScreen('home');
@@ -591,6 +598,35 @@ document.getElementById('change-org-btn').addEventListener('click', () => {
 document.getElementById('employee-logout-btn').addEventListener('click', async () => {
   await fetch('/api/employee/logout', { method: 'POST' });
   showAuthGate();
+});
+
+/* ---------- idle auto-logout: 10 minutes with no interaction while an authenticated screen is
+   showing logs the employee out back to the password-only login screen (org/id stay remembered).
+   Explicitly not needed if the user would instead use the home screen's own in/out buttons for a
+   real clock punch - this only guards an unattended, already-open session. ---------- */
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const AUTHENTICATED_SCREENS = ['home', 'update', 'sheet'];
+let idleTimer = null;
+
+function isOnAuthenticatedScreen() {
+  const active = document.querySelector('.screen.active');
+  return !!active && AUTHENTICATED_SCREENS.includes(active.id.replace('screen-', ''));
+}
+
+async function handleIdleTimeout() {
+  if (!isOnAuthenticatedScreen()) return;
+  try { await fetch('/api/employee/logout', { method: 'POST' }); } catch (e) {}
+  await showAuthGate();
+}
+
+function resetIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer);
+  if (!isOnAuthenticatedScreen()) return;
+  idleTimer = setTimeout(handleIdleTimeout, IDLE_TIMEOUT_MS);
+}
+
+['click', 'touchstart', 'keydown', 'scroll'].forEach((evt) => {
+  document.addEventListener(evt, resetIdleTimer, { passive: true });
 });
 
 /* ---------- init ---------- */

@@ -337,6 +337,14 @@ html, body {
 /* analyzed sheet table */
 .sheet-table-wrap {
   overflow-x: auto;
+  /* A bounded height + its own vertical scroll (rather than letting the whole page scroll) is
+     what makes the thead's `position: sticky` below actually stick - without an explicit
+     overflow-y here, the browser still silently makes this element the sticky positioning
+     context (an overflow-x that isn't 'visible' forces overflow-y's used value to 'auto' per the
+     CSS spec) but never gives it anywhere to scroll, so the header just scrolls away with the
+     page instead of pinning. */
+  overflow-y: auto;
+  max-height: calc(100vh - 260px);
   background: var(--card-bg);
   border-radius: var(--radius);
   box-shadow: 0 2px 10px rgba(20,20,50,0.05);
