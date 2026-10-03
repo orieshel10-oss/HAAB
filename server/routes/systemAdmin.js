@@ -409,6 +409,7 @@ const ADVANCED_FIELD_CHECKS = {
   shortWeekday: (v) => Number.isInteger(v) && v >= 0 && v <= 6,
   shortWeekdayStandardMinutes: (v) => isPositiveIntInDay(v),
   weeklyRestEntryTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
+  weeklyRestExitTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
   shabbatPremiumRate: (v) => typeof v === 'number' && v > 0 && v < 10,
   holidayPaySeniorityMonths: (v) => Number.isInteger(v) && v >= 0 && v <= 120,
   holidayPayAveragingMonths: (v) => Number.isInteger(v) && v > 0 && v <= 36
@@ -418,7 +419,8 @@ const ADVANCED_FIELD_COLUMNS = {
   otTier2Rate: 'ot_tier2_rate', nightStartTime: 'night_start_time', nightEndTime: 'night_end_time',
   nightMinOverlapMinutes: 'night_min_overlap_minutes', nightStandardMinutes: 'night_standard_minutes',
   shortWeekday: 'short_weekday', shortWeekdayStandardMinutes: 'short_weekday_standard_minutes',
-  weeklyRestEntryTime: 'weekly_rest_entry_time', shabbatPremiumRate: 'shabbat_premium_rate',
+  weeklyRestEntryTime: 'weekly_rest_entry_time', weeklyRestExitTime: 'weekly_rest_exit_time',
+  shabbatPremiumRate: 'shabbat_premium_rate',
   holidayPaySeniorityMonths: 'holiday_pay_seniority_months', holidayPayAveragingMonths: 'holiday_pay_averaging_months'
 };
 

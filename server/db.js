@@ -154,6 +154,9 @@ async function init() {
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS short_weekday INTEGER;
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS short_weekday_standard_minutes INTEGER;
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS weekly_rest_entry_time TEXT;
+    -- Both default to 16:00/20:00 (applied in code, not here) when unset and weekly_rest_day=6
+    -- (Saturday) - real Shabbat entry/exit, not applicable to a non-Saturday rest day.
+    ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS weekly_rest_exit_time TEXT;
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS shabbat_premium_rate NUMERIC NOT NULL DEFAULT 1.5;
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS holiday_pay_seniority_months INTEGER;
     ALTER TABLE attendance_agreements ADD COLUMN IF NOT EXISTS holiday_pay_averaging_months INTEGER;

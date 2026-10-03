@@ -36,8 +36,10 @@ async function api(path, options) {
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(`screen-${name}`).classList.add('active');
-  if (name === 'update') { updateCal.refresh(); loadDayPanel(updateCal.getSelectedDate()); }
-  if (name === 'sheet') sheetView.refresh();
+  // Every entry starts fresh on today/the current month - whatever day or month was last
+  // viewed before leaving these screens doesn't carry over.
+  if (name === 'update') { updateCal.resetToToday(); updateCal.refresh(); loadDayPanel(updateCal.getSelectedDate()); }
+  if (name === 'sheet') { sheetView.resetToCurrentMonth(); sheetView.refresh(); }
   resetIdleTimer();
 }
 
@@ -113,6 +115,13 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
     refresh();
   }
 
+  function resetToToday() {
+    const now = new Date();
+    state.year = now.getFullYear();
+    state.month = now.getMonth() + 1;
+    state.selectedDate = todayStr();
+  }
+
   async function refresh() {
     titleEl.textContent = `${MONTH_NAMES[state.month - 1]} ${state.year}`;
     const cellData = await onRender(state.year, state.month);
@@ -154,7 +163,7 @@ function createCalendarController({ containerId, titleId, onRender, onDayClick }
     });
   }
 
-  return { refresh, setMonth, getSelectedDate: () => state.selectedDate };
+  return { refresh, setMonth, resetToToday, getSelectedDate: () => state.selectedDate };
 }
 
 /* ---------- update-attendance screen (inline day panel: list of reports + one editor) ---------- */
@@ -318,6 +327,11 @@ function closeEditor() {
   editingReportId = null;
   const editor = document.getElementById('day-panel-editor');
   editor.reset();
+  // Native form.reset() clears the time inputs to empty, not the app's own "00:00" convention -
+  // reassert it explicitly so a cancelled/cleared editor doesn't reintroduce the native
+  // current-time picker quirk the entry field was fixed against.
+  document.getElementById('editor-entry').value = '00:00';
+  document.getElementById('editor-exit').value = '';
   document.getElementById('editor-note').classList.add('hidden');
   document.getElementById('editor-note-toggle').classList.remove('hidden');
   editor.classList.add('hidden');
@@ -377,6 +391,12 @@ function createSheetController() {
     refresh();
   }
 
+  function resetToCurrentMonth() {
+    const now = new Date();
+    state.year = now.getFullYear();
+    state.month = now.getMonth() + 1;
+  }
+
   async function refresh() {
     titleEl.textContent = `${MONTH_NAMES[state.month - 1]} ${state.year}`;
     const data = await api(`/api/attendance/sheet?year=${state.year}&month=${state.month}`);
@@ -429,7 +449,9 @@ function createSheetController() {
           <td>${hoursCell(row.minutes.regular)}</td>
           <td>${hoursCell(row.minutes.ot125)}</td>
           <td>${hoursCell(row.minutes.ot150)}</td>
-          <td>${hoursCell(row.minutes.shabbat)}</td>
+          <td>${hoursCell(row.minutes.shabbat150)}</td>
+          <td>${hoursCell(row.minutes.shabbat175)}</td>
+          <td>${hoursCell(row.minutes.shabbat200)}</td>
           <td class="${noteClass}">${noteParts.join(' - ')}</td>
         </tr>`;
       }).join('');
@@ -444,12 +466,14 @@ function createSheetController() {
         <td>${hoursCell(data.totals.regular)}</td>
         <td>${hoursCell(data.totals.ot125)}</td>
         <td>${hoursCell(data.totals.ot150)}</td>
-        <td>${hoursCell(data.totals.shabbat)}</td>
+        <td>${hoursCell(data.totals.shabbat150)}</td>
+        <td>${hoursCell(data.totals.shabbat175)}</td>
+        <td>${hoursCell(data.totals.shabbat200)}</td>
         <td></td>
       </tr>`;
   }
 
-  return { refresh, setMonth };
+  return { refresh, setMonth, resetToCurrentMonth };
 }
 const sheetView = createSheetController();
 document.querySelector('[data-cal-prev="sheet"]').addEventListener('click', () => sheetView.setMonth(-1));

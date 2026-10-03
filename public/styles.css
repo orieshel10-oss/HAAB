@@ -350,7 +350,7 @@ html, body {
   box-shadow: 0 2px 10px rgba(20,20,50,0.05);
   padding: 4px;
 }
-.sheet-table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 13px; }
+.sheet-table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 13px; }
 .sheet-table th, .sheet-table td { padding: 8px 6px; text-align: center; white-space: nowrap; }
 .sheet-table thead th {
   position: sticky;

@@ -32,7 +32,8 @@ const {
 const {
   resolveDayPlan,
   computeAverageRegularMinutes,
-  standardMinutesForDay
+  standardMinutesForDay,
+  EMPTY_MINUTES
 } = require('./agreementRules');
 
 const app = express();
@@ -301,13 +302,17 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     }
     const dayType = dayTypeFromDate(...group.date.split('-').map(Number));
     const totalMinutes = group.sessions.reduce((sum, s) => sum + (new Date(s.outTs) - new Date(s.inTs)) / 60000, 0);
-    const split = splitDayMinutes(Math.round(totalMinutes), dayType);
+    // The generic (no-agreement) engine has no Shabbat-window/tier concept - its flat `shabbat`
+    // bucket maps onto the new shape's shabbat150 (the "within standard" Shabbat rate) so every
+    // row downstream can rely on the same 6 keys regardless of which engine produced it.
+    const genericSplit = splitDayMinutes(Math.round(totalMinutes), dayType);
+    const split = { ...EMPTY_MINUTES, regular: genericSplit.regular, ot125: genericSplit.ot125, ot150: genericSplit.ot150, shabbat150: genericSplit.shabbat };
     const rows = group.sessions.map((s, i) => ({
       firstIn: s.inTs,
       lastOut: s.outTs,
       type: s.type,
       note: s.note,
-      minutes: i === group.sessions.length - 1 ? split : { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+      minutes: i === group.sessions.length - 1 ? split : { ...EMPTY_MINUTES },
       showTotals: i === group.sessions.length - 1
     }));
     (rowsByDate[group.date] = rowsByDate[group.date] || []).push(...rows);
@@ -318,7 +323,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       lastOut: null,
       type: r.type,
       note: r.note,
-      minutes: { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+      minutes: { ...EMPTY_MINUTES },
       showTotals: true
     }));
     (rowsByDate[ds] = rowsByDate[ds] || []).push(...openRows);
@@ -333,14 +338,14 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       lastOut: null,
       type: r.type,
       note: r.note,
-      minutes: { regular: standardMinutes, ot125: 0, ot150: 0, shabbat: 0 },
+      minutes: { ...EMPTY_MINUTES, regular: standardMinutes },
       showTotals: true
     }));
     (rowsByDate[ds] = rowsByDate[ds] || []).push(...wholeDayRows);
   });
 
   const daysInMonth = new Date(year, month, 0).getDate();
-  const totals = { regular: 0, ot125: 0, ot150: 0, shabbat: 0, absenceCounts: {} };
+  const totals = { regular: 0, ot125: 0, ot150: 0, shabbat150: 0, shabbat175: 0, shabbat200: 0, absenceCounts: {} };
   const days = [];
 
   for (let d = 1; d <= daysInMonth; d++) {
@@ -357,7 +362,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
         lastOut: null,
         type: null,
         note: null,
-        minutes: { regular: 0, ot125: 0, ot150: 0, shabbat: 0 },
+        minutes: { ...EMPTY_MINUTES },
         showTotals: true
       }];
     }
@@ -366,7 +371,9 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       totals.regular += r.minutes.regular;
       totals.ot125 += r.minutes.ot125;
       totals.ot150 += r.minutes.ot150;
-      totals.shabbat += r.minutes.shabbat;
+      totals.shabbat150 += r.minutes.shabbat150;
+      totals.shabbat175 += r.minutes.shabbat175;
+      totals.shabbat200 += r.minutes.shabbat200;
       if (r.type && r.type !== 'attendance') totals.absenceCounts[r.type] = (totals.absenceCounts[r.type] || 0) + 1;
     });
 

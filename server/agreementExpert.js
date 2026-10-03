@@ -31,8 +31,8 @@ const SYSTEM_PROMPT = `אתה עוזר AI המתמחה בהגדרת הסכמי �
 - מדרגות שעות נוספות: כמה דקות במדרגה הראשונה ובאיזה שיעור (otTier1Minutes, otTier1Rate - למשל 1.25), ושיעור המדרגה השנייה ואילך (otTier2Rate - למשל 1.5).
 - הגדרת משמרת לילה: שעת התחלה וסיום של "הלילה" (nightStartTime, nightEndTime, בפורמט HH:MM), כמה דקות חפיפה מינימליות דרושות כדי שמשמרת תיחשב משמרת לילה (nightMinOverlapMinutes), ומה התקן (בדקות) שחל כשמשמרת מוגדרת כמשמרת לילה (nightStandardMinutes) - אם המשתמש מגדיר מהי משמרת לילה אך לא אומר מה התקן המיוחד שחל, אל תמציא מספר - השאר שדה זה ללא ערך ושאל את המשתמש מפורשות מה התקן.
 - יום קצר קבוע בשבוע, שאינו ערב יום המנוחה (shortWeekday 0-6, shortWeekdayStandardMinutes בדקות) - למשל ארגון שעובד א'-ה' עם יום חמישי מקוצר.
-- שעת "כניסת" יום המנוחה (weeklyRestEntryTime, HH:MM) - אם מוגדר, שעות עבודה בערב יום המנוחה אחרי השעה הזו נחשבות כשעות יום מנוחה (גם אם היום הקלנדרי עדיין לא השתנה).
-- שיעור תוספת יום המנוחה (shabbatPremiumRate, למשל 1.5).
+- שעות "כניסת" ו"יציאת" השבת (weeklyRestEntryTime, weeklyRestExitTime, בפורמט HH:MM) - רלוונטי רק כאשר יום המנוחה הוא שבת. ברירת המחדל החוקית, אם לא נאמר אחרת: כניסה 16:00, יציאה 20:00. שעות עבודה בתוך חלון השבת (מערב יום המנוחה ועד יציאתו למחרת) משולמות בתוספת: 150% על שעות בתוך התקן, 175% על שעתיים הנוספות הראשונות, ו-200% מעבר לכך - כאשר הסיווג (תקן/נוספות-ראשונות/נוספות-מעבר) נקבע לפי רצף השעות הכולל של המשמרת (אם חלק מהמשמרת בוצע לפני כניסת השבת, השעות לאחר הכניסה ממשיכות את אותה ספירה, לא מתחילות מחדש).
+- שיעור תוספת יום המנוחה (shabbatPremiumRate, למשל 1.5) - שדה מידע כללי, נפרד מהתעריפים הקבועים 150%/175%/200% לעיל.
 - זכאות לתשלום חג: ותק מינימלי בחודשים (holidayPaySeniorityMonths), ואורך חלון הממוצע לחישוב תשלום החג בחודשים (holidayPayAveragingMonths) - תשלום החג מחושב כממוצע שעות רגילות בחלון הזה.
 
 אם המשתמש מתאר כלל שאינו מתאים לאף שדה מהרשימה לעיל - אל תתעלם ממנו. הוסף אותו לאובייקט additionalFields בסיכום (ראה מבנה למטה), כדי שישמר לעתיד גם אם עדיין לא מחושב אוטומטית.
@@ -44,7 +44,7 @@ const SYSTEM_PROMPT = `אתה עוזר AI המתמחה בהגדרת הסכמי �
 1. שורה שבדיוק אומרת:
 ${SUMMARY_MARKER}
 2. מיד אחריה, אובייקט JSON יחיד ללא טקסט נוסף סביבו - כלול תמיד את חמשת השדות הבסיסיים, וכל שדה מתקדם שרלוונטי לשיחה (אל תכלול שדה מתקדם שלא עלה בשיחה כלל ושאינו רלוונטי). דוגמה למבנה מלא (כלול רק את מה שרלוונטי):
-{"dayStandardMinutes": 480, "shortenedDayStandardMinutes": 420, "weeklyRestDay": 6, "workdaysPerWeek": 6, "holidayCalendar": "jewish", "breakMinutes": 30, "otTier1Minutes": 120, "otTier1Rate": 1.25, "otTier2Rate": 1.5, "nightStartTime": "22:00", "nightEndTime": "06:00", "nightMinOverlapMinutes": 120, "nightStandardMinutes": 420, "shortWeekday": 4, "shortWeekdayStandardMinutes": 510, "weeklyRestEntryTime": "16:00", "shabbatPremiumRate": 1.5, "holidayPaySeniorityMonths": 3, "holidayPayAveragingMonths": 3, "additionalFields": {"someRule": {"label": "שם הכלל בעברית", "value": "הערך או התיאור שלו"}}}
+{"dayStandardMinutes": 480, "shortenedDayStandardMinutes": 420, "weeklyRestDay": 6, "workdaysPerWeek": 6, "holidayCalendar": "jewish", "breakMinutes": 30, "otTier1Minutes": 120, "otTier1Rate": 1.25, "otTier2Rate": 1.5, "nightStartTime": "22:00", "nightEndTime": "06:00", "nightMinOverlapMinutes": 120, "nightStandardMinutes": 420, "shortWeekday": 4, "shortWeekdayStandardMinutes": 510, "weeklyRestEntryTime": "16:00", "weeklyRestExitTime": "20:00", "shabbatPremiumRate": 1.5, "holidayPaySeniorityMonths": 3, "holidayPayAveragingMonths": 3, "additionalFields": {"someRule": {"label": "שם הכלל בעברית", "value": "הערך או התיאור שלו"}}}
 3. שורה שבדיוק אומרת:
 ${DOCUMENT_MARKER}
 4. ואז מסמך תיעוד מסודר בעברית, עם כותרות ברורות (רק לסעיפים הרלוונטיים): "תקן שעות", "הפסקה", "שעות נוספות", "משמרת לילה", "יום מנוחה ושבת", "חגים", "שדות נוספים". כתוב בפרוזה ברורה ומסודרת, לא כהעתקה גולמית של השיחה.
@@ -90,6 +90,7 @@ function validateSummary(raw) {
     shortWeekday: (v) => Number.isInteger(v) && v >= 0 && v <= 6,
     shortWeekdayStandardMinutes: (v) => isPositiveIntInDay(v),
     weeklyRestEntryTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
+    weeklyRestExitTime: (v) => typeof v === 'string' && HHMM_RE.test(v),
     shabbatPremiumRate: (v) => typeof v === 'number' && v > 0 && v < 10,
     holidayPaySeniorityMonths: (v) => Number.isInteger(v) && v >= 0 && v <= 120,
     holidayPayAveragingMonths: (v) => Number.isInteger(v) && v > 0 && v <= 36
