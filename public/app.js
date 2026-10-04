@@ -337,6 +337,16 @@ function closeEditor() {
   editor.classList.add('hidden');
 }
 
+// The browser's own native time-picker widget (opened by tapping the field) has its own
+// internal Clear/Cancel/Set buttons that a web page cannot see, label, or hook into directly -
+// but using its own "Clear" does fire a change event with an empty value, which this catches and
+// snaps back to the app's own "always has a value" convention for entry (00:00, not truly
+// empty). Native "Cancel" typically closes the picker without firing any event at all, so the
+// field is left exactly as it was before the picker opened - no extra handling needed for that.
+document.getElementById('editor-entry').addEventListener('change', (e) => {
+  if (!e.target.value) e.target.value = '00:00';
+});
+
 document.getElementById('day-panel-add-btn').addEventListener('click', () => openEditor(null));
 document.getElementById('editor-cancel').addEventListener('click', closeEditor);
 document.getElementById('editor-type').addEventListener('change', syncEditorVisibility);
