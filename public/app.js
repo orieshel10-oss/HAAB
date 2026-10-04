@@ -338,7 +338,19 @@ function closeEditor() {
 }
 
 document.getElementById('day-panel-add-btn').addEventListener('click', () => openEditor(null));
-document.getElementById('editor-cancel').addEventListener('click', closeEditor);
+// "ניקוי" (clear) and "ביטול" (cancel) are deliberately different actions: clear only resets the
+// time fields and stays in the editor (for "I started typing the wrong thing, let me retry");
+// cancel leaves the editor *and* the whole update-attendance screen, same as the back button -
+// re-entering the screen afterward always starts fresh (showScreen('update') already resets the
+// calendar/day-panel to today).
+document.getElementById('editor-clear').addEventListener('click', () => {
+  document.getElementById('editor-entry').value = '00:00';
+  document.getElementById('editor-exit').value = '';
+});
+document.getElementById('editor-cancel').addEventListener('click', () => {
+  closeEditor();
+  showScreen('home');
+});
 document.getElementById('editor-type').addEventListener('change', syncEditorVisibility);
 document.getElementById('editor-wholeday').addEventListener('change', syncEditorVisibility);
 document.getElementById('editor-note-toggle').addEventListener('click', () => {
