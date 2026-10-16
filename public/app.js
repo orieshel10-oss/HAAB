@@ -346,6 +346,14 @@ function closeEditor() {
 document.getElementById('editor-entry').addEventListener('change', (e) => {
   if (!e.target.value) e.target.value = '00:00';
 });
+// Same reasoning as the entry field above, but exit's own "always has a value" default is an
+// empty string (blank legitimately means "exit not known yet" here, never 00:00) - this still
+// matters even though it looks like a no-op: re-asserting the value on the change event forces a
+// clean, consistent state instead of leaving whatever raw artifact the native picker's own Clear
+// button left behind (some mobile browsers don't fully normalize/repaint the field otherwise).
+document.getElementById('editor-exit').addEventListener('change', (e) => {
+  if (!e.target.value) e.target.value = '';
+});
 
 document.getElementById('day-panel-add-btn').addEventListener('click', () => openEditor(null));
 document.getElementById('editor-cancel').addEventListener('click', closeEditor);
