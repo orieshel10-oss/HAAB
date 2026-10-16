@@ -222,6 +222,11 @@ function reportTypeLabel(type) {
 let panelDate = null;
 let panelReports = [];
 let editingReportId = null;
+// Whether the exit field's value should actually be submitted. The field itself always shows a
+// real time (never blank - see openEditor), so "no exit yet" can no longer be read off the
+// string being empty; this flag is the real source of truth, flipped only by actually
+// interacting with the field (see its 'change' listener below).
+let exitTimeConfirmed = false;
 
 async function loadDayPanel(date) {
   panelDate = date;
@@ -308,12 +313,14 @@ function openEditor(report) {
   const editor = document.getElementById('day-panel-editor');
   document.getElementById('editor-type').innerHTML = buildTypeOptions(report ? report.type : 'attendance');
   document.getElementById('editor-wholeday').checked = !!(report && !report.entryTs);
-  // An empty time input lets some mobile browsers' native picker default its scroll position to
-  // the current clock time, which is irrelevant here (clocking the *actual* current time has its
-  // own buttons on the home screen) - starting from 00:00 instead avoids that. Exit stays empty
-  // by default (not 00:00) since blank there has its own meaning: "exit not known yet".
+  // An empty time input lets the browser's native picker default its scroll/highlight position
+  // to the current clock time when tapped, which is irrelevant here (clocking the *actual*
+  // current time has its own buttons on the home screen) - both fields always show a real value
+  // (00:00 default) to avoid that. "Exit not known yet" is tracked separately via
+  // exitTimeConfirmed below, not by leaving this field blank.
   document.getElementById('editor-entry').value = report && report.entryTs ? fmtTime(report.entryTs) : '00:00';
-  document.getElementById('editor-exit').value = report && report.exitTs ? fmtTime(report.exitTs) : '';
+  document.getElementById('editor-exit').value = report && report.exitTs ? fmtTime(report.exitTs) : '00:00';
+  exitTimeConfirmed = !!(report && report.exitTs);
   const note = document.getElementById('editor-note');
   note.value = (report && report.note) || '';
   note.classList.toggle('hidden', !(report && report.note));
@@ -325,13 +332,14 @@ function openEditor(report) {
 
 function closeEditor() {
   editingReportId = null;
+  exitTimeConfirmed = false;
   const editor = document.getElementById('day-panel-editor');
   editor.reset();
   // Native form.reset() clears the time inputs to empty, not the app's own "00:00" convention -
   // reassert it explicitly so a cancelled/cleared editor doesn't reintroduce the native
-  // current-time picker quirk the entry field was fixed against.
+  // current-time-picker-defaults-to-now quirk either field was fixed against.
   document.getElementById('editor-entry').value = '00:00';
-  document.getElementById('editor-exit').value = '';
+  document.getElementById('editor-exit').value = '00:00';
   document.getElementById('editor-note').classList.add('hidden');
   document.getElementById('editor-note-toggle').classList.remove('hidden');
   editor.classList.add('hidden');
@@ -339,20 +347,22 @@ function closeEditor() {
 
 // The browser's own native time-picker widget (opened by tapping the field) has its own
 // internal Clear/Cancel/Set buttons that a web page cannot see, label, or hook into directly -
-// but using its own "Clear" does fire a change event with an empty value, which this catches and
-// snaps back to the app's own "always has a value" convention for entry (00:00, not truly
-// empty). Native "Cancel" typically closes the picker without firing any event at all, so the
-// field is left exactly as it was before the picker opened - no extra handling needed for that.
+// but using its own "Clear" does fire a change event with an empty value, which this catches.
+// Both fields always snap back to 00:00 rather than staying blank: an empty time input makes the
+// native picker default its highlight to the *current* clock time next time it's opened, which
+// is wrong here regardless of which field it is. Native "Cancel" typically closes the picker
+// without firing any event at all, so the field is left exactly as it was before - no handling
+// needed for that case.
 document.getElementById('editor-entry').addEventListener('change', (e) => {
   if (!e.target.value) e.target.value = '00:00';
 });
-// Same reasoning as the entry field above, but exit's own "always has a value" default is an
-// empty string (blank legitimately means "exit not known yet" here, never 00:00) - this still
-// matters even though it looks like a no-op: re-asserting the value on the change event forces a
-// clean, consistent state instead of leaving whatever raw artifact the native picker's own Clear
-// button left behind (some mobile browsers don't fully normalize/repaint the field otherwise).
+// Exit's "not known yet" state can no longer be "the field is blank" (that's what caused the
+// native-picker-jumps-to-now bug above) - it's tracked by this flag instead, set only by an
+// actual interaction with the field. Using native Clear counts as "un-confirming" it, same as
+// never having touched it.
 document.getElementById('editor-exit').addEventListener('change', (e) => {
-  if (!e.target.value) e.target.value = '';
+  if (!e.target.value) { e.target.value = '00:00'; exitTimeConfirmed = false; }
+  else exitTimeConfirmed = true;
 });
 
 document.getElementById('day-panel-add-btn').addEventListener('click', () => openEditor(null));
@@ -377,8 +387,11 @@ document.getElementById('day-panel-editor').addEventListener('submit', async (e)
     return;
   }
 
-  const body = { date: panelDate, type, wholeDay, entry: wholeDay ? null : entry, exit: wholeDay ? null : (exit || null), note: note || null };
-  if (!wholeDay && exit) {
+  // exit's field value is never blank anymore (see the change listener above) - whether to
+  // actually submit it is tracked by exitTimeConfirmed, not by the string itself.
+  const exitGiven = !wholeDay && exitTimeConfirmed;
+  const body = { date: panelDate, type, wholeDay, entry: wholeDay ? null : entry, exit: exitGiven ? exit : null, note: note || null };
+  if (exitGiven) {
     // Cross-midnight: an exit earlier than its own entry happened the next day - the entry
     // always keeps this panel's own date, only the exit's date ever rolls over.
     body.exitDate = exit < entry ? shiftIsoDate(panelDate, 1) : panelDate;
