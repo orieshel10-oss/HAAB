@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { verifyPassword, verifyTotpCode, isValidIsraeliId, resolveOrgContext, hashPassword } = require('../auth');
 const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin } = require('../orgAdmins');
+const { pairSessions, groupSessionsIntoRows, shiftDateStr, toDateKey, pad } = require('../attendance');
 
 const router = express.Router();
 
@@ -430,6 +431,207 @@ router.delete('/report-types/:code', asyncHandler(async (req, res) => {
   if (role === 'time_admin') return res.status(403).json({ error: 'not authorized' });
   await pool.query('DELETE FROM org_report_types WHERE org_id = $1 AND type_code = $2', [orgId, req.params.code]);
   res.json({ ok: true });
+}));
+
+/* ---------- attendance approvals (Phase 4d) ---------- */
+
+async function resolveAdminIdentity(req) {
+  if (req.session.systemAdminId) {
+    const { rows } = await pool.query('SELECT name FROM system_admins WHERE id = $1', [req.session.systemAdminId]);
+    return { role: 'system_admin', name: rows[0] ? rows[0].name : 'System Admin' };
+  }
+  const { rows } = await pool.query('SELECT name, admin_type FROM org_admins WHERE id = $1', [req.session.orgAdminId]);
+  return { role: rows[0] ? rows[0].admin_type : 'org_admin', name: rows[0] ? rows[0].name : null };
+}
+
+function monthRange(year, month) {
+  const start = `${year}-${pad(month)}-01`;
+  const end = `${year}-${pad(month)}-${pad(new Date(year, month, 0).getDate())}`;
+  return { start, end };
+}
+
+// Employees this admin is allowed to see - same scope rule GET /employees already uses.
+async function employeesInScope(orgId, subOrgRestriction) {
+  const params = [orgId];
+  let query = `SELECT id, name, first_name, last_name FROM employees WHERE client_id = $1`;
+  if (subOrgRestriction) {
+    query += ' AND sub_org_id = ANY($2::int[])';
+    params.push(subOrgRestriction);
+  }
+  const { rows } = await pool.query(query, params);
+  return rows;
+}
+
+function fmtTimeIL(ts) {
+  return new Date(ts).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
+}
+
+// Shared by GET /approvals and POST /approvals/approve-all so "what counts as a day with
+// attendance" can never drift between the two - returns { [employeeId]: { [date]: { summary,
+// totalMinutes } } }, built from the same session-pairing pipeline the sheet handler itself uses
+// (server/index.js), but without the per-agreement pay-category split - this screen reviews what
+// was reported, not computed pay.
+async function buildDayEntriesByEmployee(employeeIds, start, end) {
+  const paddedStart = shiftDateStr(start, -1);
+  const paddedEnd = shiftDateStr(end, 1);
+  const { rows: events } = await pool.query(
+    `SELECT employee_id, type, ts FROM attendance_events
+     WHERE employee_id = ANY($1::int[]) AND ts >= $2 AND ts <= $3 ORDER BY employee_id, ts`,
+    [employeeIds, `${paddedStart}T00:00:00.000Z`, `${paddedEnd}T23:59:59.999Z`]
+  );
+  const { rows: reports } = await pool.query(
+    `SELECT employee_id, date, type, entry_ts, exit_ts FROM attendance_reports
+     WHERE employee_id = ANY($1::int[]) AND date BETWEEN $2 AND $3`,
+    [employeeIds, start, end]
+  );
+
+  const byEmployee = {};
+  for (const employeeId of employeeIds) {
+    const empEvents = events.filter((e) => e.employee_id === employeeId);
+    const empReports = reports.filter((r) => r.employee_id === employeeId);
+    const clockSessions = pairSessions(empEvents).map((s) => ({ ...s, type: 'attendance' }));
+    const timedReports = empReports
+      .filter((r) => r.entry_ts && r.exit_ts)
+      .map((r) => ({ inTs: r.entry_ts, outTs: r.exit_ts, type: r.type }));
+    const allSessions = [...clockSessions, ...timedReports]
+      .filter((s) => { const key = toDateKey(s.inTs); return key >= start && key <= end; })
+      .sort((a, b) => new Date(a.inTs) - new Date(b.inTs));
+    const groups = groupSessionsIntoRows(allSessions);
+
+    const byDate = {};
+    for (const group of groups) {
+      const totalMinutes = group.sessions.reduce((sum, s) => sum + (new Date(s.outTs) - new Date(s.inTs)) / 60000, 0);
+      const summary = group.sessions.map((s) => ({ type: s.type, timeLabel: `${fmtTimeIL(s.inTs)}-${fmtTimeIL(s.outTs)}` }));
+      byDate[group.date] = { summary, totalMinutes: Math.round(totalMinutes) };
+    }
+    // Whole-day reports (no entry_ts) have no session/time to show - listed with a "יום שלם" label.
+    empReports.filter((r) => !r.entry_ts).forEach((r) => {
+      const entry = byDate[r.date] || { summary: [], totalMinutes: 0 };
+      entry.summary.push({ type: r.type, timeLabel: 'יום שלם' });
+      byDate[r.date] = entry;
+    });
+    byEmployee[employeeId] = byDate;
+  }
+  return byEmployee;
+}
+
+router.get('/approvals', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const year = Number(req.query.year);
+  const month = Number(req.query.month);
+  const { start, end } = monthRange(year, month);
+  const employees = await employeesInScope(orgId, subOrgRestriction);
+  if (!employees.length) return res.json([]);
+  const employeeIds = employees.map((e) => e.id);
+  const nameById = Object.fromEntries(employees.map((e) => [e.id, [e.first_name, e.last_name].filter(Boolean).join(' ') || e.name]));
+
+  const byEmployee = await buildDayEntriesByEmployee(employeeIds, start, end);
+  const { rows: approvals } = await pool.query(
+    `SELECT employee_id, date, status, rejection_reason, reviewed_by_name, reviewed_at FROM attendance_approvals
+     WHERE employee_id = ANY($1::int[]) AND date BETWEEN $2 AND $3`,
+    [employeeIds, start, end]
+  );
+  const approvalByKey = Object.fromEntries(approvals.map((a) => [`${a.employee_id}|${a.date}`, a]));
+
+  const results = [];
+  for (const employeeId of employeeIds) {
+    for (const [date, entry] of Object.entries(byEmployee[employeeId] || {})) {
+      const approval = approvalByKey[`${employeeId}|${date}`];
+      results.push({
+        employeeId,
+        employeeName: nameById[employeeId],
+        date,
+        summary: entry.summary,
+        totalMinutes: entry.totalMinutes,
+        status: approval ? approval.status : 'pending',
+        rejectionReason: approval ? approval.rejection_reason : null,
+        reviewedByName: approval ? approval.reviewed_by_name : null,
+        reviewedAt: approval ? approval.reviewed_at : null
+      });
+    }
+  }
+  results.sort((a, b) => (a.date === b.date ? a.employeeName.localeCompare(b.employeeName, 'he') : a.date.localeCompare(b.date)));
+  res.json(results);
+}));
+
+async function assertEmployeeInScope(employeeId, orgId, subOrgRestriction) {
+  const { rows } = await pool.query('SELECT id FROM employees WHERE id = $1 AND client_id = $2', [employeeId, orgId]);
+  if (!rows[0]) return false;
+  if (!subOrgRestriction) return true;
+  const { rows: subRows } = await pool.query('SELECT sub_org_id FROM employees WHERE id = $1', [employeeId]);
+  return subRows[0] && subOrgRestriction.includes(subRows[0].sub_org_id);
+}
+
+router.post('/approvals/approve', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const { employeeId, date } = req.body || {};
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!(await assertEmployeeInScope(employeeId, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const identity = await resolveAdminIdentity(req);
+  await pool.query(
+    `INSERT INTO attendance_approvals (employee_id, date, status, rejection_reason, reviewed_by_role, reviewed_by_name, reviewed_at)
+     VALUES ($1, $2, 'approved', NULL, $3, $4, now())
+     ON CONFLICT (employee_id, date) DO UPDATE SET status = 'approved', rejection_reason = NULL,
+       reviewed_by_role = $3, reviewed_by_name = $4, reviewed_at = now()`,
+    [employeeId, date, identity.role, identity.name]
+  );
+  res.json({ ok: true });
+}));
+
+router.post('/approvals/reject', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const { employeeId, date, reason } = req.body || {};
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'reason is required' });
+  if (!(await assertEmployeeInScope(employeeId, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const identity = await resolveAdminIdentity(req);
+  await pool.query(
+    `INSERT INTO attendance_approvals (employee_id, date, status, rejection_reason, reviewed_by_role, reviewed_by_name, reviewed_at)
+     VALUES ($1, $2, 'rejected', $3, $4, $5, now())
+     ON CONFLICT (employee_id, date) DO UPDATE SET status = 'rejected', rejection_reason = $3,
+       reviewed_by_role = $4, reviewed_by_name = $5, reviewed_at = now()`,
+    [employeeId, date, reason.trim(), identity.role, identity.name]
+  );
+  res.json({ ok: true });
+}));
+
+router.post('/approvals/approve-all', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const { year, month } = req.body || {};
+  if (!year || !month) return res.status(400).json({ error: 'year and month are required' });
+  const identity = await resolveAdminIdentity(req);
+  const employees = await employeesInScope(orgId, subOrgRestriction);
+  if (!employees.length) return res.json({ ok: true, count: 0 });
+  const { start, end } = monthRange(Number(year), Number(month));
+  const employeeIds = employees.map((e) => e.id);
+
+  const byEmployee = await buildDayEntriesByEmployee(employeeIds, start, end);
+  const { rows: existing } = await pool.query(
+    `SELECT employee_id, date, status FROM attendance_approvals
+     WHERE employee_id = ANY($1::int[]) AND date BETWEEN $2 AND $3`,
+    [employeeIds, start, end]
+  );
+  const existingByKey = Object.fromEntries(existing.map((a) => [`${a.employee_id}|${a.date}`, a.status]));
+
+  const pendingKeys = new Set();
+  for (const employeeId of employeeIds) {
+    Object.keys(byEmployee[employeeId] || {}).forEach((date) => pendingKeys.add(`${employeeId}|${date}`));
+  }
+
+  let count = 0;
+  for (const key of pendingKeys) {
+    if (existingByKey[key] === 'approved') continue; // already approved, and never overwrite a rejection
+    if (existingByKey[key] === 'rejected') continue;
+    const [employeeId, date] = key.split('|');
+    await pool.query(
+      `INSERT INTO attendance_approvals (employee_id, date, status, reviewed_by_role, reviewed_by_name, reviewed_at)
+       VALUES ($1, $2, 'approved', $3, $4, now())
+       ON CONFLICT (employee_id, date) DO UPDATE SET status = 'approved', reviewed_by_role = $3, reviewed_by_name = $4, reviewed_at = now()`,
+      [Number(employeeId), date, identity.role, identity.name]
+    );
+    count += 1;
+  }
+  res.json({ ok: true, count });
 }));
 
 module.exports = router;

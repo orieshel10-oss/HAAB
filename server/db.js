@@ -284,6 +284,22 @@ async function init() {
       effective_until TEXT,
       PRIMARY KEY (org_id, type_code)
     );
+
+    -- Time Admin / Org Admin attendance-approval tracking (Phase 4d). Deliberately lazy: a row
+    -- only exists once someone actually approves/rejects that employee+date - a day with no row
+    -- is implicitly "pending", so there's no need to pre-populate one per employee per day.
+    -- Does not yet feed back into /api/attendance/sheet's own calculation (future work).
+    CREATE TABLE IF NOT EXISTS attendance_approvals (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      date TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
+      rejection_reason TEXT,
+      reviewed_by_role TEXT NOT NULL CHECK (reviewed_by_role IN ('system_admin', 'org_admin', 'time_admin')),
+      reviewed_by_name TEXT NOT NULL,
+      reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (employee_id, date)
+    );
   `);
 
   // Small fixed catalog (7 rows) - seeded directly here rather than via a standalone script,

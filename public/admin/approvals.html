@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HAAB - אישור דיווחים</title>
+<meta name="theme-color" content="#2f6fed" />
+<link rel="icon" href="../icons/icon-192.png" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="admin.css" />
+<script src="admin-common.js"></script>
+</head>
+<body>
+<div class="admin-wrap">
+  <div id="org-header-root"></div>
+
+  <div class="admin-content">
+    <section class="admin-section">
+      <div class="admin-section-head">
+        <h2>אישור דיווחי נוכחות</h2>
+        <button class="btn btn-secondary btn-small" id="toggle-filter-btn">הצגת הכל</button>
+        <button class="btn btn-primary btn-small" id="approve-all-btn">אשר הכל</button>
+      </div>
+      <div class="cal-nav">
+        <button class="cal-nav-btn" id="appr-prev">›</button>
+        <div class="cal-title" id="appr-month-title"></div>
+        <button class="cal-nav-btn" id="appr-next">‹</button>
+      </div>
+      <table class="admin-table">
+        <thead><tr><th>עובד</th><th>תאריך</th><th>דיווח</th><th>סה"כ שעות</th><th>סטטוס</th><th></th></tr></thead>
+        <tbody id="appr-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<div class="modal-overlay-simple hidden" id="reject-modal-overlay">
+  <div class="modal-card-simple">
+    <h3>סיבת דחייה</h3>
+    <textarea id="reject-reason-input" rows="4" style="width:100%;border:1px solid var(--border);border-radius:9px;padding:9px;font-family:inherit;font-size:13px;background:var(--bg);color:var(--text);"></textarea>
+    <div class="field-msg error" id="reject-modal-msg"></div>
+    <div class="form-actions">
+      <button class="btn btn-primary" id="reject-modal-confirm">דחייה</button>
+      <button class="btn btn-secondary" id="reject-modal-cancel">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<script>
+async function api(path, options) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = 'org-login.html'; throw new Error('not authenticated'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'error');
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+const WEEKDAYS = ['א','ב','ג','ד','ה','ו','ש'];
+const MONTH_NAMES = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+const STATUS_LABELS = { pending: 'ממתין לאישור', approved: 'מאושר', rejected: 'נדחה' };
+const STATUS_CLASSES = { pending: '', approved: 'note-vacation', rejected: 'note-sick' };
+
+function minutesToLabel(m) { return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`; }
+function fmtDate(iso) {
+  const [y, mo, d] = iso.split('-').map(Number);
+  const weekday = new Date(y, mo - 1, d).getDay();
+  return `${WEEKDAYS[weekday]} ${String(d).padStart(2, '0')}/${String(mo).padStart(2, '0')}`;
+}
+
+let me = null;
+let state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
+let filter = 'pending';
+
+function setMonth(delta) {
+  state.month += delta;
+  if (state.month > 12) { state.month = 1; state.year++; }
+  if (state.month < 1) { state.month = 12; state.year--; }
+  loadApprovals();
+}
+document.getElementById('appr-prev').addEventListener('click', () => setMonth(-1));
+document.getElementById('appr-next').addEventListener('click', () => setMonth(1));
+
+document.getElementById('toggle-filter-btn').addEventListener('click', () => {
+  filter = filter === 'pending' ? 'all' : 'pending';
+  document.getElementById('toggle-filter-btn').textContent = filter === 'pending' ? 'הצגת הכל' : 'רק ממתינים לאישור';
+  renderTable();
+});
+
+let rowsCache = [];
+
+async function loadApprovals() {
+  document.getElementById('appr-month-title').textContent = `${MONTH_NAMES[state.month - 1]} ${state.year}`;
+  document.getElementById('appr-tbody').innerHTML = '<tr class="empty-row"><td colspan="6">טוען...</td></tr>';
+  rowsCache = await api(`/api/org/approvals?year=${state.year}&month=${state.month}`);
+  renderTable();
+}
+
+function reportTypeLabel(row) {
+  const typeNames = { attendance: 'נוכחות' };
+  return row.summary.map(s => `${typeNames[s.type] || s.type}: ${s.timeLabel}`).join(', ');
+}
+
+function renderTable() {
+  const tbody = document.getElementById('appr-tbody');
+  const rows = filter === 'pending' ? rowsCache.filter(r => r.status === 'pending') : rowsCache;
+  tbody.innerHTML = rows.length ? rows.map(r => `
+    <tr data-employee="${r.employeeId}" data-date="${r.date}">
+      <td>${r.employeeName}</td>
+      <td>${fmtDate(r.date)}</td>
+      <td>${reportTypeLabel(r)}</td>
+      <td>${r.totalMinutes ? minutesToLabel(r.totalMinutes) : ''}</td>
+      <td class="${STATUS_CLASSES[r.status]}">
+        ${STATUS_LABELS[r.status]}
+        ${r.status === 'rejected' ? `<div class="field-msg">${r.rejectionReason}</div>` : ''}
+        ${r.status !== 'pending' ? `<div class="field-msg">${r.reviewedByName || ''}</div>` : ''}
+      </td>
+      <td>
+        ${r.status === 'pending' ? `
+          <button class="btn btn-primary btn-small approve-btn">אשר</button>
+          <button class="btn btn-danger btn-small reject-btn">דחה</button>
+        ` : ''}
+      </td>
+    </tr>`).join('') : `<tr class="empty-row"><td colspan="6">${filter === 'pending' ? 'אין דיווחים הממתינים לאישור' : 'אין דיווחים בחודש זה'}</td></tr>`;
+
+  tbody.querySelectorAll('.approve-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('tr');
+      btn.disabled = true;
+      try {
+        await api('/api/org/approvals/approve', {
+          method: 'POST',
+          body: JSON.stringify({ employeeId: Number(row.dataset.employee), date: row.dataset.date })
+        });
+        await loadApprovals();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.reject-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('tr');
+      openRejectModal(Number(row.dataset.employee), row.dataset.date);
+    });
+  });
+}
+
+let rejectTarget = null;
+function openRejectModal(employeeId, date) {
+  rejectTarget = { employeeId, date };
+  document.getElementById('reject-reason-input').value = '';
+  document.getElementById('reject-modal-msg').textContent = '';
+  document.getElementById('reject-modal-overlay').classList.remove('hidden');
+}
+document.getElementById('reject-modal-cancel').addEventListener('click', () => {
+  document.getElementById('reject-modal-overlay').classList.add('hidden');
+});
+document.getElementById('reject-modal-confirm').addEventListener('click', async () => {
+  const reason = document.getElementById('reject-reason-input').value.trim();
+  const msg = document.getElementById('reject-modal-msg');
+  if (!reason) { msg.textContent = 'נדרש לציין סיבת דחייה'; return; }
+  const btn = document.getElementById('reject-modal-confirm');
+  btn.disabled = true;
+  try {
+    await api('/api/org/approvals/reject', {
+      method: 'POST',
+      body: JSON.stringify({ employeeId: rejectTarget.employeeId, date: rejectTarget.date, reason })
+    });
+    document.getElementById('reject-modal-overlay').classList.add('hidden');
+    await loadApprovals();
+  } catch (err) {
+    msg.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('approve-all-btn').addEventListener('click', async () => {
+  if (!confirm(`לאשר את כל הדיווחים הממתינים של ${MONTH_NAMES[state.month - 1]} ${state.year}?`)) return;
+  const btn = document.getElementById('approve-all-btn');
+  btn.disabled = true;
+  try {
+    const result = await api('/api/org/approvals/approve-all', {
+      method: 'POST',
+      body: JSON.stringify({ year: state.year, month: state.month })
+    });
+    await loadApprovals();
+    alert(`אושרו ${result.count} דיווחים`);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ---------- init ---------- */
+api('/api/org/me').then(async (data) => {
+  me = data;
+  renderOrgHeader({ me, active: 'approvals' });
+  await loadApprovals();
+});
+</script>
+</body>
+</html>
