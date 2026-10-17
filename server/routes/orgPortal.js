@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { verifyPassword, verifyTotpCode, isValidIsraeliId, resolveOrgContext, hashPassword } = require('../auth');
+const { verifyPassword, verifyTotpCode, isValidIsraeliId, resolveOrgContext, hashPassword, sanitizeIdentifier } = require('../auth');
 const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin } = require('../orgAdmins');
 const { pairSessions, groupSessionsIntoRows, shiftDateStr, toDateKey, pad } = require('../attendance');
 
@@ -13,10 +13,14 @@ function asyncHandler(fn) {
 /* ---------- auth ---------- */
 
 router.post('/login', asyncHandler(async (req, res) => {
-  const { orgCode, email, password, totp } = req.body || {};
+  let { orgCode, email, password, totp } = req.body || {};
   if (!orgCode || !email || !password || !totp) {
     return res.status(400).json({ error: 'orgCode, email, password and totp are required' });
   }
+  orgCode = sanitizeIdentifier(orgCode);
+  email = sanitizeIdentifier(email);
+  password = sanitizeIdentifier(password);
+  totp = sanitizeIdentifier(totp);
   const orgRes = await pool.query('SELECT id FROM organizations WHERE org_code = $1', [orgCode]);
   const org = orgRes.rows[0];
   // Same generic error whether the org code or the credentials are wrong - avoids leaking

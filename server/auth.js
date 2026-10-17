@@ -4,6 +4,16 @@ const { pool } = require('./db');
 
 const BCRYPT_ROUNDS = 12;
 
+// Mobile keyboards (confirmed on-device: a Hebrew-layout numeric keypad inside this app's
+// RTL-dir page) can silently insert invisible Unicode bidi/formatting marks around typed or
+// pasted digits - invisible on screen, but they make an exact-string DB lookup or TOTP/ID
+// comparison fail even though the visible text looks identical to what was actually set.
+// Strip those plus surrounding whitespace from any login-identifier field before using it.
+const INVISIBLE_CHARS_RE = /[​-‏‪-‮⁦-⁩﻿]/g;
+function sanitizeIdentifier(value) {
+  return typeof value === 'string' ? value.replace(INVISIBLE_CHARS_RE, '').trim() : value;
+}
+
 function hashPassword(plain) {
   return bcrypt.hash(plain, BCRYPT_ROUNDS);
 }
@@ -87,6 +97,7 @@ async function resolveOrgContext(req, res, next) {
 }
 
 module.exports = {
+  sanitizeIdentifier,
   hashPassword,
   verifyPassword,
   generateTotpSecret,

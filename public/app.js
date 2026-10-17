@@ -15,6 +15,16 @@ async function loadReportTypes() {
   types.forEach((t) => { REPORT_TYPES_BY_CODE[t.code] = t; });
 }
 
+// Mobile keyboards (confirmed on-device: a numeric keypad inside this app's RTL-dir page) can
+// silently insert invisible Unicode bidi/formatting marks around typed or pasted digits -
+// invisible on screen, but they break an exact-string server-side lookup/comparison. Strip those
+// plus surrounding whitespace before sending or storing any login-identifier field. Mirrors the
+// same sanitizeIdentifier() in server/auth.js, which is still the authoritative defense.
+const INVISIBLE_CHARS_RE = /[​-‏‪-‮⁦-⁩﻿]/g;
+function sanitizeIdentifier(value) {
+  return typeof value === 'string' ? value.replace(INVISIBLE_CHARS_RE, '').trim() : value;
+}
+
 function pad(n) { return String(n).padStart(2, '0'); }
 function dateStr(y, m, d) { return `${y}-${pad(m)}-${pad(d)}`; }
 function todayStr() {
@@ -591,7 +601,7 @@ orgSelectForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const msg = document.getElementById('org-select-msg');
   msg.textContent = '';
-  const code = document.getElementById('org-select-code').value.trim();
+  const code = sanitizeIdentifier(document.getElementById('org-select-code').value);
   try {
     const res = await fetch(`/api/employee/organizations/${code}`);
     if (!res.ok) { msg.textContent = 'קוד ארגון לא נמצא'; return; }
@@ -611,15 +621,15 @@ employeeLoginForm.addEventListener('submit', async (e) => {
   const msg = document.getElementById('employee-login-msg');
   msg.textContent = '';
   const orgCode = localStorage.getItem(ORG_CODE_STORAGE_KEY);
-  const idNumber = document.getElementById('employee-login-id').value.trim();
-  const password = document.getElementById('employee-login-password').value;
+  const idNumber = sanitizeIdentifier(document.getElementById('employee-login-id').value);
+  const password = sanitizeIdentifier(document.getElementById('employee-login-password').value);
   try {
     const res = await fetch('/api/employee/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orgCode, idNumber, password })
     });
-    if (!res.ok) { msg.textContent = `פרטי התחברות שגויים (debug: id=${idNumber.length} chars, pw=${password.length} chars)`; return; }
+    if (!res.ok) { msg.textContent = 'פרטי התחברות שגויים'; return; }
     const loginData = await res.json();
     localStorage.setItem(EMPLOYEE_ID_STORAGE_KEY, idNumber);
     const fullName = [loginData.firstName, loginData.lastName].filter(Boolean).join(' ');
@@ -688,7 +698,7 @@ document.getElementById('admin-totp-form').addEventListener('submit', async (e) 
   e.preventDefault();
   const msg = document.getElementById('admin-totp-msg');
   msg.textContent = '';
-  const totp = document.getElementById('admin-totp-code').value.trim();
+  const totp = sanitizeIdentifier(document.getElementById('admin-totp-code').value);
   try {
     const res = await fetch('/api/employee/step-up-admin', {
       method: 'POST',

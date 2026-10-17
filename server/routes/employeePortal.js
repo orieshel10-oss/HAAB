@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { verifyPassword, verifyTotpCode, requireEmployee } = require('../auth');
+const { verifyPassword, verifyTotpCode, requireEmployee, sanitizeIdentifier } = require('../auth');
 
 const router = express.Router();
 
@@ -14,17 +14,20 @@ function asyncHandler(fn) {
 router.get('/organizations/:code', asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT id, name, logo_data_url FROM organizations WHERE org_code = $1',
-    [req.params.code]
+    [sanitizeIdentifier(req.params.code)]
   );
   if (!rows[0]) return res.status(404).json({ error: 'org not found' });
   res.json({ id: rows[0].id, name: rows[0].name, logoDataUrl: rows[0].logo_data_url });
 }));
 
 router.post('/login', asyncHandler(async (req, res) => {
-  const { orgCode, idNumber, password } = req.body || {};
+  let { orgCode, idNumber, password } = req.body || {};
   if (!orgCode || !idNumber || !password) {
     return res.status(400).json({ error: 'orgCode, idNumber and password are required' });
   }
+  orgCode = sanitizeIdentifier(orgCode);
+  idNumber = sanitizeIdentifier(idNumber);
+  password = sanitizeIdentifier(password);
   const orgRes = await pool.query('SELECT id FROM organizations WHERE org_code = $1', [orgCode]);
   const org = orgRes.rows[0];
   // Generic error whether the org code, id number or password is wrong - same reasoning as the
@@ -108,8 +111,9 @@ router.get('/admin-link', requireEmployee, asyncHandler(async (req, res) => {
 }));
 
 router.post('/step-up-admin', requireEmployee, asyncHandler(async (req, res) => {
-  const { totp } = req.body || {};
-  if (!totp) return res.status(400).json({ error: 'totp is required' });
+  const { totp: totpRaw } = req.body || {};
+  if (!totpRaw) return res.status(400).json({ error: 'totp is required' });
+  const totp = sanitizeIdentifier(totpRaw);
   const { rows } = await pool.query(
     'SELECT id, totp_secret FROM org_admins WHERE employee_id = $1',
     [req.session.employeeId]

@@ -6,7 +6,8 @@ const {
   generateTotpSecret,
   totpEnrollUri,
   verifyTotpCode,
-  requireSystemAdmin
+  requireSystemAdmin,
+  sanitizeIdentifier
 } = require('../auth');
 const { listOrgAdmins, createOrgAdmin, updateOrgAdmin, deleteOrgAdmin, ADMIN_TYPES } = require('../orgAdmins');
 const { chatWithAgreementExpert } = require('../agreementExpert');
@@ -22,10 +23,13 @@ const SUB_ORG_TYPES = ['factory_unit', 'division', 'department'];
 /* ---------- auth ---------- */
 
 router.post('/login', asyncHandler(async (req, res) => {
-  const { email, password, totp } = req.body || {};
+  let { email, password, totp } = req.body || {};
   if (!email || !password || !totp) {
     return res.status(400).json({ error: 'email, password and totp are required' });
   }
+  email = sanitizeIdentifier(email);
+  password = sanitizeIdentifier(password);
+  totp = sanitizeIdentifier(totp);
   const { rows } = await pool.query('SELECT * FROM system_admins WHERE email = $1', [email]);
   const admin = rows[0];
   if (!admin || !(await verifyPassword(password, admin.password_hash))) {
