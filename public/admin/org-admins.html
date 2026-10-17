@@ -21,8 +21,8 @@
         <button class="btn btn-primary btn-small" id="new-admin-btn">+ מנהל</button>
       </div>
       <table class="admin-table">
-        <thead><tr><th>שם</th><th>מייל</th><th>סוג</th><th>תתי-ארגון מורשים</th><th></th><th></th></tr></thead>
-        <tbody id="admins-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+        <thead><tr><th>שם</th><th>מייל</th><th>סוג</th><th>תתי-ארגון מורשים</th><th>עובד מקושר</th><th></th><th></th></tr></thead>
+        <tbody id="admins-tbody"><tr class="empty-row"><td colspan="7">טוען...</td></tr></tbody>
       </table>
       <form class="admin-form hidden" id="admin-form">
         <div class="form-row">
@@ -48,6 +48,10 @@
         <div id="oa-subOrgs-wrap" class="hidden">
           <label>תתי-ארגונים מורשים (חובה ל-Time Admin)</label>
           <div class="checkbox-list" id="oa-subOrgs-list"></div>
+        </div>
+        <div>
+          <label>קישור לעובד (לא חובה - מאפשר כניסה גם מאפליקציית העובד)</label>
+          <select id="oa-employee"><option value="">ללא קישור</option></select>
         </div>
         <div class="form-msg" id="admin-form-msg"></div>
         <div class="form-actions">
@@ -86,6 +90,15 @@ async function loadSubOrgs() {
   `).join('') || '<span style="font-size:12px;color:var(--text-muted)">אין תתי-ארגונים בארגון זה</span>';
 }
 
+let currentEmployees = [];
+async function loadEmployees() {
+  currentEmployees = await api('/api/org/employees');
+  const select = document.getElementById('oa-employee');
+  select.innerHTML = '<option value="">ללא קישור</option>' + currentEmployees.map(e =>
+    `<option value="${e.id}">${[e.first_name, e.last_name].filter(Boolean).join(' ') || e.name} (${e.id_number || ''})</option>`
+  ).join('');
+}
+
 async function loadAdmins() {
   currentAdmins = await api('/api/org/admins');
   const tbody = document.getElementById('admins-tbody');
@@ -95,9 +108,10 @@ async function loadAdmins() {
       <td>${a.email}</td>
       <td><span class="badge ${a.admin_type === 'time_admin' ? 'badge-time-admin' : 'badge-org-admin'}">${ADMIN_TYPE_LABELS[a.admin_type]}</span></td>
       <td>${(a.subOrganizations || []).map(s => s.name).join(', ') || '-'}</td>
+      <td>${a.employee_name || '-'}</td>
       <td><button class="btn btn-secondary btn-small edit-admin-btn" data-id="${a.id}">עריכה</button></td>
       <td><button class="btn btn-danger btn-small delete-admin-btn" data-id="${a.id}">מחיקה</button></td>
-    </tr>`).join('') : '<tr class="empty-row"><td colspan="6">אין עדיין מנהלים</td></tr>';
+    </tr>`).join('') : '<tr class="empty-row"><td colspan="7">אין עדיין מנהלים</td></tr>';
 
   tbody.querySelectorAll('.edit-admin-btn').forEach(btn => {
     btn.addEventListener('click', () => openEditAdmin(btn.dataset.id));
@@ -113,6 +127,7 @@ wirePasswordToggle('oa-password', 'oa-password-toggle');
 function resetAdminForm() {
   editingAdminId = null;
   adminForm.reset();
+  document.getElementById('oa-employee').value = '';
   document.getElementById('oa-email').disabled = false;
   document.getElementById('oa-password').required = true;
   document.getElementById('oa-password-label').textContent = 'סיסמה';
@@ -158,6 +173,7 @@ function openEditAdmin(id) {
   document.getElementById('oa-password-label').textContent = 'סיסמה חדשה (השאירו ריק כדי לא לשנות)';
   document.getElementById('oa-type').value = a.admin_type;
   document.getElementById('oa-subOrgs-wrap').classList.toggle('hidden', a.admin_type !== 'time_admin');
+  document.getElementById('oa-employee').value = a.employee_id || '';
   const authorizedIds = new Set((a.subOrganizations || []).map(s => String(s.id)));
   document.querySelectorAll('#oa-subOrgs-list input[type=checkbox]').forEach(cb => {
     cb.checked = authorizedIds.has(cb.value);
@@ -175,11 +191,13 @@ adminForm.addEventListener('submit', async (e) => {
   msg.className = 'form-msg';
   const adminType = document.getElementById('oa-type').value;
   const subOrgIds = [...document.querySelectorAll('#oa-subOrgs-list input:checked')].map(cb => Number(cb.value));
+  const employeeIdRaw = document.getElementById('oa-employee').value;
   const body = {
     name: document.getElementById('oa-name').value.trim(),
     email: document.getElementById('oa-email').value.trim(),
     adminType,
-    subOrgIds
+    subOrgIds,
+    employeeId: employeeIdRaw ? Number(employeeIdRaw) : null
   };
   const password = document.getElementById('oa-password').value;
   try {
@@ -201,7 +219,9 @@ adminForm.addEventListener('submit', async (e) => {
     const msgs = {
       'time_admin requires at least one sub-organization in subOrgIds': 'חובה לבחור לפחות תת-ארגון אחד עבור Time Admin',
       'this email is already an admin for this organization': 'כבר קיים מנהל עם המייל הזה בארגון',
-      'not authorized to create this admin type': 'אין הרשאה ליצור מנהל מסוג זה'
+      'not authorized to create this admin type': 'אין הרשאה ליצור מנהל מסוג זה',
+      'this employee is already linked to another admin account': 'העובד הזה כבר מקושר לחשבון מנהל אחר',
+      'employeeId does not belong to this organization': 'העובד שנבחר אינו שייך לארגון זה'
     };
     msg.textContent = msgs[err.message] || err.message;
     msg.className = 'form-msg error';
@@ -232,6 +252,7 @@ api('/api/org/me').then(async (data) => {
     document.getElementById('oa-type-wrap').classList.add('hidden');
   }
   await loadSubOrgs();
+  await loadEmployees();
   await loadAdmins();
 });
 </script>

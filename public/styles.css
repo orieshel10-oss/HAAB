@@ -432,6 +432,7 @@ html, body {
   margin-top: 6px;
 }
 .btn-auth:disabled { opacity: 0.6; cursor: default; }
+.role-choice-buttons { display: flex; flex-direction: column; gap: 12px; }
 .link-btn {
   display: block;
   width: 100%;

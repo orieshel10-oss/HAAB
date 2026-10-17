@@ -108,6 +108,38 @@
     </div>
   </section>
 
+  <!-- מסך בחירת תפקיד: מוצג רק למשתמש שמוגדר גם כעובד וגם כ-org admin/time admin -->
+  <section class="screen" id="screen-role-choice">
+    <header class="topbar topbar-brand">
+      <img src="icons/icon-192.png" alt="HAAB" class="brand-logo" />
+      <h1>HAAB</h1>
+    </header>
+    <div class="content">
+      <p class="auth-intro">להמשיך כעובד או כמנהל?</p>
+      <div class="role-choice-buttons">
+        <button class="btn-auth" id="role-choice-employee-btn">עובד</button>
+        <button class="btn-auth" id="role-choice-admin-btn">מנהל</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- מסך קוד אימות מנהל: TOTP בלבד, הסיסמה כבר אומתה בכניסת העובד -->
+  <section class="screen" id="screen-admin-totp">
+    <header class="topbar">
+      <button class="back-btn" data-back-to-role-choice>›</button>
+      <h1>כניסת מנהל</h1>
+    </header>
+    <div class="content">
+      <p class="auth-intro">הזינו קוד אימות מ-Google Authenticator</p>
+      <form class="auth-form" id="admin-totp-form">
+        <label>קוד אימות</label>
+        <input id="admin-totp-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
+        <div class="field-msg error" id="admin-totp-msg"></div>
+        <button type="submit" class="btn-auth">כניסה</button>
+      </form>
+    </div>
+  </section>
+
   <!-- מסך עדכון נוכחות: מאחד דיווח היעדרות + השלמת נוכחות + עדכון דיווחים קיימים -->
   <section class="screen" id="screen-update">
     <header class="topbar">

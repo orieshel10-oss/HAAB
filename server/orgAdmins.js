@@ -8,7 +8,10 @@ const ADMIN_TYPES = ['org_admin', 'time_admin'];
 
 async function listOrgAdmins(orgId) {
   const { rows: admins } = await pool.query(
-    `SELECT id, email, name, admin_type, created_at FROM org_admins WHERE org_id = $1 ORDER BY created_at DESC`,
+    `SELECT oa.id, oa.email, oa.name, oa.admin_type, oa.created_at, oa.employee_id,
+            CASE WHEN e.id IS NOT NULL THEN COALESCE(e.first_name || ' ' || e.last_name, e.name) END AS employee_name
+     FROM org_admins oa LEFT JOIN employees e ON e.id = oa.employee_id
+     WHERE oa.org_id = $1 ORDER BY oa.created_at DESC`,
     [orgId]
   );
   const { rows: subOrgLinks } = await pool.query(
@@ -25,7 +28,7 @@ async function listOrgAdmins(orgId) {
 
 // `restrictToType`: when set, the created row can only be of that admin_type (used to stop an
 // Org Admin session from creating a fellow org_admin row - only System Admin may do that).
-async function createOrgAdmin(orgId, { email, name, password, adminType, subOrgIds }, restrictToType) {
+async function createOrgAdmin(orgId, { email, name, password, adminType, subOrgIds, employeeId }, restrictToType) {
   if (!email || !name || !password) {
     return { status: 400, error: 'email, name and password are required' };
   }
@@ -38,6 +41,10 @@ async function createOrgAdmin(orgId, { email, name, password, adminType, subOrgI
   if (adminType === 'time_admin' && (!Array.isArray(subOrgIds) || subOrgIds.length === 0)) {
     return { status: 400, error: 'time_admin requires at least one sub-organization in subOrgIds' };
   }
+  if (employeeId) {
+    const empCheck = await pool.query('SELECT id FROM employees WHERE id = $1 AND client_id = $2', [employeeId, orgId]);
+    if (!empCheck.rows[0]) return { status: 400, error: 'employeeId does not belong to this organization' };
+  }
 
   const passwordHash = await hashPassword(password);
   const totpSecret = generateTotpSecret();
@@ -48,14 +55,17 @@ async function createOrgAdmin(orgId, { email, name, password, adminType, subOrgI
     let created;
     try {
       const { rows } = await client.query(
-        `INSERT INTO org_admins (org_id, email, name, password_hash, totp_secret, admin_type)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, email, name, admin_type`,
-        [orgId, email, name, passwordHash, totpSecret, adminType]
+        `INSERT INTO org_admins (org_id, email, name, password_hash, totp_secret, admin_type, employee_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, email, name, admin_type`,
+        [orgId, email, name, passwordHash, totpSecret, adminType, employeeId || null]
       );
       created = rows[0];
     } catch (err) {
       if (err.code === '23505') {
         await client.query('ROLLBACK');
+        if (err.constraint === 'idx_org_admins_employee_id') {
+          return { status: 409, error: 'this employee is already linked to another admin account' };
+        }
         return { status: 409, error: 'this email is already an admin for this organization' };
       }
       throw err;
@@ -91,7 +101,7 @@ async function createOrgAdmin(orgId, { email, name, password, adminType, subOrgI
 // `restrictToType`: when set, only a row currently of that admin_type may be updated, and the
 // update may not change adminType away from it (used to stop an Org Admin session from touching
 // or repurposing a fellow org_admin row - only System Admin may do that).
-async function updateOrgAdmin(orgId, id, { name, email, adminType, subOrgIds, password }, restrictToType) {
+async function updateOrgAdmin(orgId, id, { name, email, adminType, subOrgIds, password, employeeId }, restrictToType) {
   if (!name || !email) return { status: 400, error: 'name and email are required' };
   if (!ADMIN_TYPES.includes(adminType)) {
     return { status: 400, error: `adminType must be one of ${ADMIN_TYPES.join(', ')}` };
@@ -101,6 +111,10 @@ async function updateOrgAdmin(orgId, id, { name, email, adminType, subOrgIds, pa
   }
   if (adminType === 'time_admin' && (!Array.isArray(subOrgIds) || subOrgIds.length === 0)) {
     return { status: 400, error: 'time_admin requires at least one sub-organization in subOrgIds' };
+  }
+  if (employeeId) {
+    const empCheck = await pool.query('SELECT id FROM employees WHERE id = $1 AND client_id = $2', [employeeId, orgId]);
+    if (!empCheck.rows[0]) return { status: 400, error: 'employeeId does not belong to this organization' };
   }
 
   const client = await pool.connect();
@@ -117,19 +131,22 @@ async function updateOrgAdmin(orgId, id, { name, email, adminType, subOrgIds, pa
     try {
       const { rows } = password
         ? await client.query(
-            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3, password_hash = $4
-             WHERE id = $5 AND org_id = $6 RETURNING id, email, name, admin_type`,
-            [name, email, adminType, await hashPassword(password), Number(id), Number(orgId)]
+            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3, password_hash = $4, employee_id = $5
+             WHERE id = $6 AND org_id = $7 RETURNING id, email, name, admin_type`,
+            [name, email, adminType, await hashPassword(password), employeeId || null, Number(id), Number(orgId)]
           )
         : await client.query(
-            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3
-             WHERE id = $4 AND org_id = $5 RETURNING id, email, name, admin_type`,
-            [name, email, adminType, Number(id), Number(orgId)]
+            `UPDATE org_admins SET name = $1, email = $2, admin_type = $3, employee_id = $4
+             WHERE id = $5 AND org_id = $6 RETURNING id, email, name, admin_type`,
+            [name, email, adminType, employeeId || null, Number(id), Number(orgId)]
           );
       updated = rows[0];
     } catch (err) {
       if (err.code === '23505') {
         await client.query('ROLLBACK');
+        if (err.constraint === 'idx_org_admins_employee_id') {
+          return { status: 409, error: 'this employee is already linked to another admin account' };
+        }
         return { status: 409, error: 'this email is already an admin for this organization' };
       }
       throw err;

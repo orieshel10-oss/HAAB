@@ -626,8 +626,7 @@ employeeLoginForm.addEventListener('submit', async (e) => {
     if (fullName) localStorage.setItem(EMPLOYEE_NAME_STORAGE_KEY, fullName);
     employeeLoginForm.reset();
     await loadReportTypes();
-    showScreen('home');
-    refreshStatus();
+    await checkAdminLinkAndProceed();
   } catch (e2) {
     msg.textContent = 'שגיאת תקשורת - נסו שוב';
   }
@@ -653,6 +652,58 @@ document.getElementById('change-org-btn').addEventListener('click', () => {
 document.getElementById('employee-logout-btn').addEventListener('click', async () => {
   await fetch('/api/employee/logout', { method: 'POST' });
   showAuthGate();
+});
+
+/* ---------- dual-role step-up: shown only for an employee also linked to an org_admin/time_admin
+   row (server/routes/employeePortal.js's GET /admin-link) - everyone else goes straight home. ---------- */
+async function checkAdminLinkAndProceed() {
+  let linked = false;
+  try {
+    const res = await fetch('/api/employee/admin-link');
+    if (res.ok) linked = (await res.json()).linked;
+  } catch (e) {}
+  if (linked) {
+    showScreen('role-choice');
+  } else {
+    showScreen('home');
+    refreshStatus();
+  }
+}
+
+document.getElementById('role-choice-employee-btn').addEventListener('click', () => {
+  showScreen('home');
+  refreshStatus();
+});
+document.getElementById('role-choice-admin-btn').addEventListener('click', () => {
+  document.getElementById('admin-totp-code').value = '';
+  document.getElementById('admin-totp-msg').textContent = '';
+  showScreen('admin-totp');
+  document.getElementById('admin-totp-code').focus();
+});
+document.querySelector('[data-back-to-role-choice]').addEventListener('click', () => {
+  showScreen('role-choice');
+});
+
+document.getElementById('admin-totp-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('admin-totp-msg');
+  msg.textContent = '';
+  const totp = document.getElementById('admin-totp-code').value.trim();
+  try {
+    const res = await fetch('/api/employee/step-up-admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ totp })
+    });
+    if (!res.ok) {
+      msg.textContent = 'קוד אימות שגוי';
+      document.getElementById('admin-totp-code').focus();
+      return;
+    }
+    window.location.href = '/admin/organization.html';
+  } catch (e2) {
+    msg.textContent = 'שגיאת תקשורת - נסו שוב';
+  }
 });
 
 /* ---------- idle auto-logout: 10 minutes with no interaction while an authenticated screen is
@@ -690,8 +741,7 @@ function resetIdleTimer() {
     const res = await fetch('/api/employee/me');
     if (res.ok) {
       await loadReportTypes();
-      showScreen('home');
-      refreshStatus();
+      await checkAdminLinkAndProceed();
     } else {
       await showAuthGate();
     }

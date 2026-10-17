@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { verifyPassword, requireEmployee } = require('../auth');
+const { verifyPassword, verifyTotpCode, requireEmployee } = require('../auth');
 
 const router = express.Router();
 
@@ -93,6 +93,38 @@ router.get('/me', requireEmployee, asyncHandler(async (req, res) => {
     lastName: rows[0].last_name,
     orgName: rows[0].org_name
   });
+}));
+
+// Phase 4e: a person who is both an employee and an Org/Time Admin (linked explicitly via
+// org_admins.employee_id, set in org-admins.html) can step up into their admin role from inside
+// the employee PWA instead of needing the separate web admin login.
+router.get('/admin-link', requireEmployee, asyncHandler(async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT email, admin_type FROM org_admins WHERE employee_id = $1',
+    [req.session.employeeId]
+  );
+  if (!rows[0]) return res.json({ linked: false });
+  res.json({ linked: true, adminType: rows[0].admin_type, email: rows[0].email });
+}));
+
+router.post('/step-up-admin', requireEmployee, asyncHandler(async (req, res) => {
+  const { totp } = req.body || {};
+  if (!totp) return res.status(400).json({ error: 'totp is required' });
+  const { rows } = await pool.query(
+    'SELECT id, totp_secret FROM org_admins WHERE employee_id = $1',
+    [req.session.employeeId]
+  );
+  const admin = rows[0];
+  if (!admin) return res.status(404).json({ error: 'no linked admin account' });
+  if (!verifyTotpCode(admin.totp_secret, totp)) {
+    return res.status(401).json({ error: 'invalid authenticator code' });
+  }
+  // Deliberately does NOT clear employeeId/employeeOrgId, unlike every other login handler's
+  // mutual-exclusivity convention - this person is valid as both for the rest of this session.
+  // Safe because requireEmployee only checks employeeId and resolveOrgContext only checks
+  // orgAdminId/systemAdminId - neither cares whether the other is also set.
+  req.session.orgAdminId = admin.id;
+  res.json({ ok: true });
 }));
 
 module.exports = router;

@@ -83,6 +83,11 @@ async function init() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(org_id, email)
     );
+    -- Phase 4e: optional link so a person who is both an employee and an Org/Time Admin can step
+    -- up into their admin role from inside the employee PWA (server/routes/employeePortal.js'
+    -- /admin-link and /step-up-admin). NULL for every admin with no employee record - unaffected.
+    ALTER TABLE org_admins ADD COLUMN IF NOT EXISTS employee_id INTEGER REFERENCES employees(id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_org_admins_employee_id ON org_admins(employee_id) WHERE employee_id IS NOT NULL;
 
     -- Required (enforced at the API layer) for every admin_type='time_admin' row: which
     -- sub-organizations they're authorized to see/approve attendance for.
