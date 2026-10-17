@@ -619,7 +619,7 @@ employeeLoginForm.addEventListener('submit', async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orgCode, idNumber, password })
     });
-    if (!res.ok) { msg.textContent = 'פרטי התחברות שגויים'; return; }
+    if (!res.ok) { msg.textContent = `פרטי התחברות שגויים (debug: id=${idNumber.length} chars, pw=${password.length} chars)`; return; }
     const loginData = await res.json();
     localStorage.setItem(EMPLOYEE_ID_STORAGE_KEY, idNumber);
     const fullName = [loginData.firstName, loginData.lastName].filter(Boolean).join(' ');
