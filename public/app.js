@@ -431,7 +431,8 @@ document.getElementById('day-panel-editor').addEventListener('submit', async (e)
 function createSheetController() {
   const titleEl = document.getElementById('sheet-cal-title');
   const tbody = document.getElementById('sheet-tbody');
-  const tfoot = document.getElementById('sheet-tfoot');
+  const totalsLabel = document.getElementById('sheet-totals-label');
+  const totalsRow = document.getElementById('sheet-totals-row');
   const state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
 
   function setMonth(delta) {
@@ -526,17 +527,14 @@ function createSheetController() {
     const absenceSummary = Object.entries(data.totals.absenceCounts)
       .map(([type, count]) => `${count} ${(REPORT_TYPES_BY_CODE[type] || { name: type }).name}`)
       .join(', ');
-    tfoot.innerHTML = `
-      <tr>
-        <td colspan="6">סה"כ${absenceSummary ? ` (${absenceSummary})` : ''}</td>
-        <td>${hoursCell(data.totals.regular)}</td>
-        <td>${hoursCell(data.totals.ot125)}</td>
-        <td>${hoursCell(data.totals.ot150)}</td>
-        <td>${hoursCell(data.totals.shabbat150)}</td>
-        <td>${hoursCell(data.totals.shabbat175)}</td>
-        <td>${hoursCell(data.totals.shabbat200)}</td>
-        <td></td>
-      </tr>`;
+    totalsLabel.textContent = `סה"כ שעות מאושרות${absenceSummary ? ` (${absenceSummary})` : ''}`;
+    totalsRow.innerHTML = `
+      <td>${hoursCell(data.totals.regular)}</td>
+      <td>${hoursCell(data.totals.ot125)}</td>
+      <td>${hoursCell(data.totals.ot150)}</td>
+      <td>${hoursCell(data.totals.shabbat150)}</td>
+      <td>${hoursCell(data.totals.shabbat175)}</td>
+      <td>${hoursCell(data.totals.shabbat200)}</td>`;
   }
 
   return { refresh, setMonth, resetToCurrentMonth };

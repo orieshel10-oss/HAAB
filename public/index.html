@@ -236,8 +236,29 @@
             </tr>
           </thead>
           <tbody id="sheet-tbody"></tbody>
-          <tfoot id="sheet-tfoot"></tfoot>
         </table>
+      </div>
+      <!-- Always visible in normal page flow (not inside the scrollable table above) - a sticky
+           table-footer row turned out unreliable across browsers (position:sticky on a <td> can
+           report as applied via getComputedStyle without the row actually pinning in practice),
+           so the totals live in their own simple card instead. -->
+      <div class="sheet-totals-card">
+        <div class="sheet-totals-label" id="sheet-totals-label">סה"כ שעות מאושרות</div>
+        <div class="sheet-totals-table-wrap">
+          <table class="sheet-totals-table">
+            <thead>
+              <tr>
+                <th>רגילות</th>
+                <th>125%</th>
+                <th>150%</th>
+                <th>שבת 150%</th>
+                <th>שבת 175%</th>
+                <th>שבת 200%</th>
+              </tr>
+            </thead>
+            <tbody><tr id="sheet-totals-row"></tr></tbody>
+          </table>
+        </div>
       </div>
       <p class="sheet-note">* לעובד עם הסכם נוכחות משויך, הניתוח מבוסס על תנאי ההסכם האישי (תקן שעות, הפסקה, מדרגות נוספות, משמרת לילה, כניסת/יציאת שבת). שעות בחלון השבת (ברירת מחדל: שישי 16:00 עד שבת 20:00, אלא אם נקבע אחרת בהסכם) ממשיכות את אותה ספירת תקן/נוספות הרציפה אך משולמות לפי 150%/175%/200% במקום 100%/125%/150%. ללא הסכם משויך, הניתוח הוא לפי חוק כללי (יום עבודה 8 שעות, 7 שעות בערב שבת, 125%/150% על שעות נוספות). יום היעדרות (חופשה/מחלה) ללא דיווחי נוכחות נספר כיום מלא.</p>
     </div>
