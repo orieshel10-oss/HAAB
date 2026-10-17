@@ -30,6 +30,51 @@
         <thead><tr><th>עובד</th><th>תאריך</th><th>דיווח</th><th>סה"כ שעות</th><th>סטטוס</th><th></th></tr></thead>
         <tbody id="appr-tbody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
       </table>
+
+      <!-- Admin day editor (Phase 4f): opened per row to correct/add an employee's report for
+           that date - reuses the employee PWA's own day-panel CSS classes from ../styles.css
+           (already linked above). Always writes to attendance_reports; real clock punches (shown
+           read-only) stay untouched. -->
+      <div class="day-panel appr-editor hidden" id="appr-day-editor" style="margin-top:16px;max-width:420px;">
+        <div class="day-panel-header">
+          <div class="day-panel-weekday" id="appr-editor-employee-name"></div>
+          <div class="day-panel-date" id="appr-editor-date-label"></div>
+        </div>
+        <div class="day-panel-clock-line">
+          <span>דיווחי שעון</span>
+          <span id="appr-editor-clock-events">אין</span>
+        </div>
+        <div class="day-panel-reports-head">
+          <span>דיווחי נוכחות</span>
+          <button type="button" class="day-panel-add-btn" id="appr-editor-add-btn">+</button>
+        </div>
+        <div class="day-panel-reports-list" id="appr-editor-reports-list"></div>
+
+        <form class="day-panel-editor hidden" id="appr-report-form">
+          <select class="report-select" id="appr-report-type"></select>
+          <label class="whole-day-toggle hidden" id="appr-report-wholeday-wrap">
+            <input type="checkbox" id="appr-report-wholeday" />
+            <span>יום שלם</span>
+          </label>
+          <div class="time-row" id="appr-report-time-row">
+            <div class="time-field">
+              <label>שעת כניסה</label>
+              <input type="time" id="appr-report-entry" />
+            </div>
+            <div class="time-field">
+              <label>שעת יציאה</label>
+              <input type="time" id="appr-report-exit" />
+            </div>
+          </div>
+          <button type="button" class="link-btn-small" id="appr-report-note-toggle">+ הוספת הערה</button>
+          <textarea id="appr-report-note" class="hidden" placeholder="הערה"></textarea>
+          <div class="modal-actions">
+            <button type="button" class="modal-secondary" id="appr-report-cancel">ביטול</button>
+            <button type="submit" class="modal-primary" id="appr-report-save">שמירה</button>
+          </div>
+        </form>
+        <button type="button" class="link-btn-small" id="appr-editor-close">סגירת עריכה</button>
+      </div>
     </section>
   </div>
 </div>
@@ -99,19 +144,46 @@ async function loadApprovals() {
   renderTable();
 }
 
-function reportTypeLabel(row) {
-  const typeNames = { attendance: 'נוכחות' };
-  return row.summary.map(s => `${typeNames[s.type] || s.type}: ${s.timeLabel}`).join(', ');
+let REPORT_TYPES_BY_CODE = {};
+async function loadReportTypes() {
+  const today = new Date().toISOString().slice(0, 10);
+  const types = await api('/api/org/report-types');
+  REPORT_TYPES_BY_CODE = {};
+  types.filter(t => t.whitelisted && (!t.effectiveFrom || t.effectiveFrom <= today) && (!t.effectiveUntil || t.effectiveUntil >= today))
+    .forEach(t => { REPORT_TYPES_BY_CODE[t.code] = t; });
+}
+function reportTypeLabel(type) {
+  if (type === 'attendance') return 'נוכחות';
+  return (REPORT_TYPES_BY_CODE[type] || {}).name || type;
+}
+function buildTypeOptions(selected) {
+  return [
+    { value: 'attendance', label: 'נוכחות' },
+    ...Object.values(REPORT_TYPES_BY_CODE).map(t => ({ value: t.code, label: t.name }))
+  ].map(o => `<option value="${o.value}" ${o.value === selected ? 'selected' : ''}>${o.label}</option>`).join('');
+}
+function rowSummaryLabel(row) {
+  return row.summary.map(s => `${reportTypeLabel(s.type)}: ${s.timeLabel}`).join(', ');
+}
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+function shiftIsoDate(iso, deltaDays) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + deltaDays);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 
 function renderTable() {
   const tbody = document.getElementById('appr-tbody');
   const rows = filter === 'pending' ? rowsCache.filter(r => r.status === 'pending') : rowsCache;
   tbody.innerHTML = rows.length ? rows.map(r => `
-    <tr data-employee="${r.employeeId}" data-date="${r.date}">
+    <tr data-employee="${r.employeeId}" data-date="${r.date}" data-name="${r.employeeName}">
       <td>${r.employeeName}</td>
       <td>${fmtDate(r.date)}</td>
-      <td>${reportTypeLabel(r)}</td>
+      <td>${rowSummaryLabel(r)}</td>
       <td>${r.totalMinutes ? minutesToLabel(r.totalMinutes) : ''}</td>
       <td class="${STATUS_CLASSES[r.status]}">
         ${STATUS_LABELS[r.status]}
@@ -123,6 +195,8 @@ function renderTable() {
           <button class="btn btn-primary btn-small approve-btn">אשר</button>
           <button class="btn btn-danger btn-small reject-btn">דחה</button>
         ` : ''}
+        ${r.status === 'rejected' ? `<button class="btn btn-secondary btn-small unreject-btn">ביטול דחייה</button>` : ''}
+        <button class="btn btn-secondary btn-small edit-day-btn">עריכה</button>
       </td>
     </tr>`).join('') : `<tr class="empty-row"><td colspan="6">${filter === 'pending' ? 'אין דיווחים הממתינים לאישור' : 'אין דיווחים בחודש זה'}</td></tr>`;
 
@@ -147,6 +221,30 @@ function renderTable() {
     btn.addEventListener('click', () => {
       const row = btn.closest('tr');
       openRejectModal(Number(row.dataset.employee), row.dataset.date);
+    });
+  });
+
+  tbody.querySelectorAll('.unreject-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('tr');
+      btn.disabled = true;
+      try {
+        await api('/api/org/approvals/unreject', {
+          method: 'POST',
+          body: JSON.stringify({ employeeId: Number(row.dataset.employee), date: row.dataset.date })
+        });
+        await loadApprovals();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.edit-day-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('tr');
+      openDayEditor(Number(row.dataset.employee), row.dataset.name, row.dataset.date);
     });
   });
 }
@@ -199,10 +297,163 @@ document.getElementById('approve-all-btn').addEventListener('click', async () =>
   }
 });
 
+/* ---------- admin day editor (Phase 4f): mirrors the employee PWA's own day-panel editor, but
+   for a different employee's day, via /api/org/approvals/day + /approvals/reports*. ---------- */
+let editorEmployeeId = null;
+let editorDate = null;
+let editorReports = [];
+let editingReportId = null;
+let editorExitConfirmed = false;
+
+async function openDayEditor(employeeId, employeeName, date) {
+  editorEmployeeId = employeeId;
+  editorDate = date;
+  editingReportId = null;
+  const day = await api(`/api/org/approvals/day?employeeId=${employeeId}&date=${date}`);
+  editorReports = day.reports;
+
+  document.getElementById('appr-editor-employee-name').textContent = employeeName;
+  const [y, mo, d] = date.split('-').map(Number);
+  document.getElementById('appr-editor-date-label').textContent = `${String(d).padStart(2, '0')}.${String(mo).padStart(2, '0')}.${y}`;
+
+  const clockSessions = [];
+  let openIn = null;
+  day.events.forEach(ev => {
+    if (ev.type === 'in') { openIn = ev.ts; }
+    else if (ev.type === 'out' && openIn) { clockSessions.push(`${fmtTime(openIn)}-${fmtTime(ev.ts)}`); openIn = null; }
+  });
+  if (openIn) clockSessions.push(`${fmtTime(openIn)}-`);
+  document.getElementById('appr-editor-clock-events').textContent = clockSessions.length ? clockSessions.join(', ') : 'אין';
+
+  renderEditorReportsList();
+  closeReportForm();
+  document.getElementById('appr-day-editor').classList.remove('hidden');
+  document.getElementById('appr-day-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function renderEditorReportsList() {
+  const list = document.getElementById('appr-editor-reports-list');
+  if (!editorReports.length) {
+    list.innerHTML = '<div class="day-panel-empty">לא דווחה נוכחות</div>';
+    return;
+  }
+  list.innerHTML = editorReports.map(r => {
+    const timeLabel = !r.entryTs ? 'יום שלם' : (r.exitTs ? `${fmtTime(r.entryTs)} - ${fmtTime(r.exitTs)}` : `${fmtTime(r.entryTs)} -`);
+    return `
+      <div class="day-panel-report-row" data-id="${r.id}">
+        <button type="button" class="day-panel-report-delete" data-id="${r.id}" title="מחיקה">🗑</button>
+        <span class="day-panel-report-type">${reportTypeLabel(r.type)}</span>
+        <span class="day-panel-report-time">${timeLabel}</span>
+      </div>`;
+  }).join('');
+
+  list.querySelectorAll('.day-panel-report-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('למחוק את הדיווח?')) return;
+      await api(`/api/org/approvals/reports/${btn.dataset.id}`, { method: 'DELETE' });
+      await openDayEditor(editorEmployeeId, document.getElementById('appr-editor-employee-name').textContent, editorDate);
+      await loadApprovals();
+    });
+  });
+  list.querySelectorAll('.day-panel-report-row').forEach(row => {
+    row.addEventListener('click', () => openReportForm(editorReports.find(r => String(r.id) === row.dataset.id)));
+  });
+}
+
+function syncReportFormVisibility() {
+  const type = document.getElementById('appr-report-type').value;
+  const wholeDayWrap = document.getElementById('appr-report-wholeday-wrap');
+  const wholeDayChecked = document.getElementById('appr-report-wholeday').checked;
+  wholeDayWrap.classList.toggle('hidden', type === 'attendance');
+  if (type === 'attendance') document.getElementById('appr-report-wholeday').checked = false;
+  document.getElementById('appr-report-time-row').style.display = (type !== 'attendance' && wholeDayChecked) ? 'none' : 'flex';
+}
+
+function openReportForm(report) {
+  editingReportId = report ? report.id : null;
+  const form = document.getElementById('appr-report-form');
+  document.getElementById('appr-report-type').innerHTML = buildTypeOptions(report ? report.type : 'attendance');
+  document.getElementById('appr-report-wholeday').checked = !!(report && !report.entryTs);
+  document.getElementById('appr-report-entry').value = report && report.entryTs ? fmtTime(report.entryTs) : '00:00';
+  document.getElementById('appr-report-exit').value = report && report.exitTs ? fmtTime(report.exitTs) : '00:00';
+  editorExitConfirmed = !!(report && report.exitTs);
+  const note = document.getElementById('appr-report-note');
+  note.value = (report && report.note) || '';
+  note.classList.toggle('hidden', !(report && report.note));
+  document.getElementById('appr-report-note-toggle').classList.toggle('hidden', !!(report && report.note));
+  syncReportFormVisibility();
+  form.classList.remove('hidden');
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function closeReportForm() {
+  editingReportId = null;
+  editorExitConfirmed = false;
+  const form = document.getElementById('appr-report-form');
+  form.reset();
+  document.getElementById('appr-report-entry').value = '00:00';
+  document.getElementById('appr-report-exit').value = '00:00';
+  document.getElementById('appr-report-note').classList.add('hidden');
+  document.getElementById('appr-report-note-toggle').classList.remove('hidden');
+  form.classList.add('hidden');
+}
+
+document.getElementById('appr-report-entry').addEventListener('change', (e) => {
+  if (!e.target.value) e.target.value = '00:00';
+});
+document.getElementById('appr-report-exit').addEventListener('change', (e) => {
+  if (!e.target.value) { e.target.value = '00:00'; editorExitConfirmed = false; }
+  else editorExitConfirmed = true;
+});
+
+document.getElementById('appr-editor-add-btn').addEventListener('click', () => openReportForm(null));
+document.getElementById('appr-report-cancel').addEventListener('click', closeReportForm);
+document.getElementById('appr-report-type').addEventListener('change', syncReportFormVisibility);
+document.getElementById('appr-report-wholeday').addEventListener('change', syncReportFormVisibility);
+document.getElementById('appr-report-note-toggle').addEventListener('click', () => {
+  document.getElementById('appr-report-note').classList.remove('hidden');
+  document.getElementById('appr-report-note-toggle').classList.add('hidden');
+});
+document.getElementById('appr-editor-close').addEventListener('click', () => {
+  document.getElementById('appr-day-editor').classList.add('hidden');
+});
+
+document.getElementById('appr-report-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const type = document.getElementById('appr-report-type').value;
+  const wholeDay = type !== 'attendance' && document.getElementById('appr-report-wholeday').checked;
+  const entry = document.getElementById('appr-report-entry').value;
+  const exit = document.getElementById('appr-report-exit').value;
+  const note = document.getElementById('appr-report-note').value.trim();
+
+  if (!wholeDay && !entry) {
+    alert('יש להזין שעת כניסה, או לסמן יום שלם');
+    return;
+  }
+
+  const exitGiven = !wholeDay && editorExitConfirmed;
+  const body = {
+    employeeId: editorEmployeeId, date: editorDate, type, wholeDay,
+    entry: wholeDay ? null : entry, exit: exitGiven ? exit : null, note: note || null
+  };
+  if (exitGiven) body.exitDate = exit < entry ? shiftIsoDate(editorDate, 1) : editorDate;
+
+  if (editingReportId) {
+    await api(`/api/org/approvals/reports/${editingReportId}`, { method: 'PUT', body: JSON.stringify(body) });
+  } else {
+    await api('/api/org/approvals/reports', { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  await openDayEditor(editorEmployeeId, document.getElementById('appr-editor-employee-name').textContent, editorDate);
+  await loadApprovals();
+});
+
 /* ---------- init ---------- */
 api('/api/org/me').then(async (data) => {
   me = data;
   renderOrgHeader({ me, active: 'approvals' });
+  await loadReportTypes();
   await loadApprovals();
 });
 </script>

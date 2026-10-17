@@ -28,9 +28,14 @@ function fmtTimeIL(ts) {
   return new Date(ts).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
 }
 
-// Returns { [employeeId]: { [date]: { summary, totalMinutes } } }, built from the same
-// session-pairing pipeline the sheet handler itself uses (server/index.js), but without the
-// per-agreement pay-category split - this screen reviews what was reported, not computed pay.
+// Returns { byEmployee: { [employeeId]: { [date]: { summary, totalMinutes } } }, reportDatesByEmployee:
+// { [employeeId]: Set<date> } }, built from the same session-pairing pipeline the sheet handler
+// itself uses (server/index.js), but without the per-agreement pay-category split - this screen
+// reviews what was reported, not computed pay. reportDatesByEmployee lets callers exempt a day
+// built entirely from real clock punches (no manual attendance_reports row at all) from needing
+// approval - callers decide the actual filtering since that also depends on whether an approval
+// row already exists for that day (an edge case: a day rejected while it still had a report that
+// was since deleted must stay visible/respected, not silently re-exempted).
 async function buildDayEntriesByEmployee(employeeIds, start, end) {
   const paddedStart = shiftDateStr(start, -1);
   const paddedEnd = shiftDateStr(end, 1);
@@ -46,6 +51,7 @@ async function buildDayEntriesByEmployee(employeeIds, start, end) {
   );
 
   const byEmployee = {};
+  const reportDatesByEmployee = {};
   for (const employeeId of employeeIds) {
     const empEvents = events.filter((e) => e.employee_id === employeeId);
     const empReports = reports.filter((r) => r.employee_id === employeeId);
@@ -70,9 +76,11 @@ async function buildDayEntriesByEmployee(employeeIds, start, end) {
       entry.summary.push({ type: r.type, timeLabel: 'יום שלם' });
       byDate[r.date] = entry;
     });
+
     byEmployee[employeeId] = byDate;
+    reportDatesByEmployee[employeeId] = new Set(empReports.map((r) => r.date));
   }
-  return byEmployee;
+  return { byEmployee, reportDatesByEmployee };
 }
 
 async function assertEmployeeInScope(employeeId, orgId, subOrgRestriction) {
@@ -90,7 +98,7 @@ async function listApprovals({ orgId, subOrgRestriction, year, month }) {
   const employeeIds = employees.map((e) => e.id);
   const nameById = Object.fromEntries(employees.map((e) => [e.id, [e.first_name, e.last_name].filter(Boolean).join(' ') || e.name]));
 
-  const byEmployee = await buildDayEntriesByEmployee(employeeIds, start, end);
+  const { byEmployee, reportDatesByEmployee } = await buildDayEntriesByEmployee(employeeIds, start, end);
   const { rows: approvals } = await pool.query(
     `SELECT employee_id, date, status, rejection_reason, reviewed_by_name, reviewed_at FROM attendance_approvals
      WHERE employee_id = ANY($1::int[]) AND date BETWEEN $2 AND $3`,
@@ -102,6 +110,11 @@ async function listApprovals({ orgId, subOrgRestriction, year, month }) {
   for (const employeeId of employeeIds) {
     for (const [date, entry] of Object.entries(byEmployee[employeeId] || {})) {
       const approval = approvalByKey[`${employeeId}|${date}`];
+      // A day built entirely from real clock punches (no manual report) needs no approval and
+      // never shows here - unless an approval row already exists for it (an edge case worth
+      // staying visible/manageable for, e.g. a rejection made while it still had a report that
+      // was since deleted).
+      if (!reportDatesByEmployee[employeeId].has(date) && !approval) continue;
       results.push({
         employeeId,
         employeeName: nameById[employeeId],
@@ -146,7 +159,7 @@ async function approveAllPending({ orgId, subOrgRestriction, year, month }, revi
   const { start, end } = monthRange(year, month);
   const employeeIds = employees.map((e) => e.id);
 
-  const byEmployee = await buildDayEntriesByEmployee(employeeIds, start, end);
+  const { byEmployee, reportDatesByEmployee } = await buildDayEntriesByEmployee(employeeIds, start, end);
   const { rows: existing } = await pool.query(
     `SELECT employee_id, date, status FROM attendance_approvals
      WHERE employee_id = ANY($1::int[]) AND date BETWEEN $2 AND $3`,
@@ -156,7 +169,11 @@ async function approveAllPending({ orgId, subOrgRestriction, year, month }, revi
 
   const pendingKeys = new Set();
   for (const employeeId of employeeIds) {
-    Object.keys(byEmployee[employeeId] || {}).forEach((date) => pendingKeys.add(`${employeeId}|${date}`));
+    // Same exemption as listApprovals: a pure-clock day with no existing approval row never
+    // needed one, so bulk-approve must not manufacture one for it.
+    Object.keys(byEmployee[employeeId] || {})
+      .filter((date) => reportDatesByEmployee[employeeId].has(date) || existingByKey[`${employeeId}|${date}`])
+      .forEach((date) => pendingKeys.add(`${employeeId}|${date}`));
   }
 
   let count = 0;
@@ -169,6 +186,104 @@ async function approveAllPending({ orgId, subOrgRestriction, year, month }, revi
   return count;
 }
 
+async function unrejectDay(employeeId, date) {
+  await pool.query('DELETE FROM attendance_approvals WHERE employee_id = $1 AND date = $2', [employeeId, date]);
+}
+
+// Validates a non-'attendance' type against an org's report-types whitelist (same
+// effective_from/effective_until window check used throughout the org-scoped routes). Shared by
+// the employee's own /api/attendance/reports (server/index.js) and the admin day-editor routes
+// below, so the two can never drift on what's a valid type for an org.
+async function isReportTypeWhitelisted(orgId, type) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM org_report_types
+     WHERE org_id = $1 AND type_code = $2
+       AND (effective_from IS NULL OR effective_from <= to_char(now(), 'YYYY-MM-DD'))
+       AND (effective_until IS NULL OR effective_until >= to_char(now(), 'YYYY-MM-DD'))`,
+    [orgId, type]
+  );
+  return !!rows[0];
+}
+
+// entry/exit are bare 'HH:MM'; exitDate is resolved client-side (today or tomorrow, per the
+// cross-midnight rule) so this stays a simple date+time-string join, same as attendance_events.
+function resolveReportBody(body) {
+  const { date, type, entry, exit, exitDate, wholeDay, note } = body || {};
+  if (!date || !type) return { error: 'date and type are required' };
+  if (type === 'attendance' && wholeDay) return { error: 'wholeDay is not valid for type attendance' };
+  if (wholeDay) return { data: { date, type, entryTs: null, exitTs: null, note: note || null } };
+  if (!entry) return { error: 'entry is required unless wholeDay is set' };
+  const entryTs = new Date(`${date}T${entry}:00`).toISOString();
+  const exitTs = exit ? new Date(`${exitDate || date}T${exit}:00`).toISOString() : null;
+  return { data: { date, type, entryTs, exitTs, note: note || null } };
+}
+
+// Phase 4f: lets an admin (time_admin/org_admin, or a linked-employee session acting as one) view
+// and correct an employee's day from the approval screen, mirroring the employee's own
+// GET /api/attendance/day (server/index.js) but parameterized instead of session-scoped.
+async function getEmployeeDay(employeeId, date) {
+  const { rows: events } = await pool.query(
+    `SELECT id, type, ts, source FROM attendance_events
+     WHERE employee_id = $1 AND ts >= $2 AND ts <= $3 ORDER BY ts`,
+    [employeeId, `${shiftDateStr(date, -1)}T00:00:00.000Z`, `${shiftDateStr(date, 1)}T23:59:59.999Z`]
+  );
+  const { rows: reports } = await pool.query(
+    `SELECT id, type, entry_ts, exit_ts, note FROM attendance_reports
+     WHERE employee_id = $1 AND date = $2 ORDER BY entry_ts NULLS FIRST, created_at`,
+    [employeeId, date]
+  );
+  return {
+    events: events.filter((e) => toDateKey(e.ts) === date).map((e) => ({ id: e.id, type: e.type, ts: e.ts, source: e.source })),
+    reports: reports.map((r) => ({ id: r.id, type: r.type, entryTs: r.entry_ts, exitTs: r.exit_ts, note: r.note }))
+  };
+}
+
+async function createReport({ orgId, employeeId, body }) {
+  const resolved = resolveReportBody(body);
+  if (resolved.error) return { error: resolved.error };
+  const d = resolved.data;
+  if (d.type !== 'attendance' && !(await isReportTypeWhitelisted(orgId, d.type))) {
+    return { error: 'type is not enabled for this organization' };
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO attendance_reports (client_id, employee_id, date, type, entry_ts, exit_ts, note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, type, entry_ts, exit_ts, note`,
+    [orgId, employeeId, d.date, d.type, d.entryTs, d.exitTs, d.note]
+  );
+  const r = rows[0];
+  return { data: { id: r.id, type: r.type, entryTs: r.entry_ts, exitTs: r.exit_ts, note: r.note } };
+}
+
+// Looks up the report's own employee_id first so the caller can scope-check it (e.g. against a
+// time_admin's sub-org restriction) before this ever touches the row.
+async function findReportEmployee(reportId) {
+  const { rows } = await pool.query('SELECT employee_id, client_id FROM attendance_reports WHERE id = $1', [reportId]);
+  return rows[0] || null;
+}
+
+async function updateReport({ orgId, employeeId, reportId, body }) {
+  const resolved = resolveReportBody(body);
+  if (resolved.error) return { error: resolved.error };
+  const d = resolved.data;
+  if (d.type !== 'attendance' && !(await isReportTypeWhitelisted(orgId, d.type))) {
+    return { error: 'type is not enabled for this organization' };
+  }
+  const { rows } = await pool.query(
+    `UPDATE attendance_reports SET date=$1, type=$2, entry_ts=$3, exit_ts=$4, note=$5
+     WHERE id = $6 AND employee_id = $7
+     RETURNING id, type, entry_ts, exit_ts, note`,
+    [d.date, d.type, d.entryTs, d.exitTs, d.note, reportId, employeeId]
+  );
+  if (!rows[0]) return { error: 'not found', status: 404 };
+  const r = rows[0];
+  return { data: { id: r.id, type: r.type, entryTs: r.entry_ts, exitTs: r.exit_ts, note: r.note } };
+}
+
+async function deleteReport(reportId, employeeId) {
+  const del = await pool.query('DELETE FROM attendance_reports WHERE id = $1 AND employee_id = $2', [reportId, employeeId]);
+  return del.rowCount > 0;
+}
+
 module.exports = {
   monthRange,
   employeesInScope,
@@ -177,5 +292,13 @@ module.exports = {
   listApprovals,
   approveDay,
   rejectDay,
-  approveAllPending
+  approveAllPending,
+  unrejectDay,
+  isReportTypeWhitelisted,
+  resolveReportBody,
+  getEmployeeDay,
+  createReport,
+  findReportEmployee,
+  updateReport,
+  deleteReport
 };

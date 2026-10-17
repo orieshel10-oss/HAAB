@@ -132,6 +132,50 @@
         <button class="modal-primary appr-approve-all-btn" id="appr-approve-all-btn">אשר הכל</button>
       </div>
       <div class="appr-list" id="appr-list"></div>
+
+      <!-- Admin day editor (Phase 4f): opened per card to correct/add an employee's report for
+           that date - mirrors #screen-update's own day-panel editor, reusing the same CSS. Always
+           writes to attendance_reports; real clock punches (shown read-only) stay untouched. -->
+      <div class="day-panel appr-editor hidden" id="appr-day-editor">
+        <div class="day-panel-header">
+          <div class="day-panel-weekday" id="appr-editor-employee-name"></div>
+          <div class="day-panel-date" id="appr-editor-date-label"></div>
+        </div>
+        <div class="day-panel-clock-line">
+          <span>דיווחי שעון</span>
+          <span id="appr-editor-clock-events">אין</span>
+        </div>
+        <div class="day-panel-reports-head">
+          <span>דיווחי נוכחות</span>
+          <button type="button" class="day-panel-add-btn" id="appr-editor-add-btn">+</button>
+        </div>
+        <div class="day-panel-reports-list" id="appr-editor-reports-list"></div>
+
+        <form class="day-panel-editor hidden" id="appr-report-form">
+          <select class="report-select" id="appr-report-type"></select>
+          <label class="whole-day-toggle hidden" id="appr-report-wholeday-wrap">
+            <input type="checkbox" id="appr-report-wholeday" />
+            <span>יום שלם</span>
+          </label>
+          <div class="time-row" id="appr-report-time-row">
+            <div class="time-field">
+              <label>שעת כניסה</label>
+              <input type="time" id="appr-report-entry" />
+            </div>
+            <div class="time-field">
+              <label>שעת יציאה</label>
+              <input type="time" id="appr-report-exit" />
+            </div>
+          </div>
+          <button type="button" class="link-btn-small" id="appr-report-note-toggle">+ הוספת הערה</button>
+          <textarea id="appr-report-note" class="hidden" placeholder="הערה"></textarea>
+          <div class="modal-actions">
+            <button type="button" class="modal-secondary" id="appr-report-cancel">ביטול</button>
+            <button type="submit" class="modal-primary" id="appr-report-save">שמירה</button>
+          </div>
+        </form>
+        <button type="button" class="link-btn-small" id="appr-editor-close">סגירת עריכה</button>
+      </div>
     </div>
   </section>
 
@@ -243,6 +287,12 @@
            report as applied via getComputedStyle without the row actually pinning in practice),
            so the totals live in their own simple card instead. -->
       <div class="sheet-totals-card">
+        <div class="sheet-stats-grid" id="sheet-stats-grid">
+          <div class="sheet-stat"><span class="sheet-stat-label">ימי תקן</span><span class="sheet-stat-value" id="sheet-stat-standard-days"></span></div>
+          <div class="sheet-stat"><span class="sheet-stat-label">שעות תקן</span><span class="sheet-stat-value" id="sheet-stat-standard-hours"></span></div>
+          <div class="sheet-stat"><span class="sheet-stat-label">שעות בפועל</span><span class="sheet-stat-value" id="sheet-stat-actual-hours"></span></div>
+          <div class="sheet-stat"><span class="sheet-stat-label">ימי עבודה בפועל</span><span class="sheet-stat-value" id="sheet-stat-actual-days"></span></div>
+        </div>
         <div class="sheet-totals-label" id="sheet-totals-label">סה"כ שעות מאושרות</div>
         <div class="sheet-totals-table-wrap">
           <table class="sheet-totals-table">

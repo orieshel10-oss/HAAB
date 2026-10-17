@@ -359,6 +359,8 @@ html, body {
 }
 .appr-approve-btn { background: var(--brand); color: #fff; }
 .appr-reject-btn { background: var(--red-dark); color: #fff; }
+.appr-unreject-btn, .appr-edit-btn { background: var(--bg); color: var(--text); border: 1px solid var(--border) !important; }
+.appr-editor { margin-top: 14px; }
 
 .modal-overlay {
   position: fixed;
@@ -454,6 +456,17 @@ html, body {
   padding: 12px;
   margin-top: 10px;
 }
+.sheet-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sheet-stat { display: flex; flex-direction: column; gap: 2px; }
+.sheet-stat-label { font-size: 11px; color: var(--text-muted); }
+.sheet-stat-value { font-size: 15px; font-weight: 800; color: var(--text); }
 .sheet-totals-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
 .sheet-totals-table-wrap { overflow-x: auto; }
 .sheet-totals-table { border-collapse: collapse; width: 100%; min-width: 360px; font-size: 12px; }

@@ -1,7 +1,19 @@
 const express = require('express');
 const { pool } = require('../db');
 const { verifyPassword, requireEmployee, sanitizeIdentifier } = require('../auth');
-const { listApprovals, assertEmployeeInScope, approveDay, rejectDay, approveAllPending } = require('../approvals');
+const {
+  listApprovals,
+  assertEmployeeInScope,
+  approveDay,
+  rejectDay,
+  approveAllPending,
+  unrejectDay,
+  getEmployeeDay,
+  createReport,
+  findReportEmployee,
+  updateReport,
+  deleteReport
+} = require('../approvals');
 
 const router = express.Router();
 
@@ -173,6 +185,68 @@ router.post('/approvals/approve-all', requireEmployee, asyncHandler(async (req, 
     ctx.reviewer
   );
   res.json({ ok: true, count });
+}));
+
+// Phase 4f: lets a linked employee acting as time_admin/org_admin cancel a rejection, reverting
+// the day to pending so it reappears in the approvals list - no employee-facing surface anywhere
+// exposes this action (a plain employee session never resolves a ctx here at all).
+router.post('/approvals/unreject', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const { employeeId, date } = req.body || {};
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!(await assertEmployeeInScope(employeeId, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  await unrejectDay(employeeId, date);
+  res.json({ ok: true });
+}));
+
+// Phase 4f: full day editor for a linked employee acting as admin, mirroring the employee's own
+// day-panel editor (/api/attendance/day + /api/attendance/reports*) but for a different employee,
+// scoped by the linked admin role's org/sub-org permissions. Always writes to attendance_reports -
+// raw attendance_events clock punches stay untouched.
+router.get('/approvals/day', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const employeeId = Number(req.query.employeeId);
+  const date = req.query.date;
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!(await assertEmployeeInScope(employeeId, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  res.json(await getEmployeeDay(employeeId, date));
+}));
+
+router.post('/approvals/reports', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const { employeeId } = req.body || {};
+  if (!employeeId) return res.status(400).json({ error: 'employeeId is required' });
+  if (!(await assertEmployeeInScope(employeeId, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const result = await createReport({ orgId: ctx.orgId, employeeId, body: req.body });
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result.data);
+}));
+
+router.put('/approvals/reports/:id', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const reportId = Number(req.params.id);
+  const owner = await findReportEmployee(reportId);
+  if (!owner) return res.status(404).json({ error: 'not found' });
+  if (!(await assertEmployeeInScope(owner.employee_id, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const result = await updateReport({ orgId: ctx.orgId, employeeId: owner.employee_id, reportId, body: req.body });
+  if (result.error) return res.status(result.status || 400).json({ error: result.error });
+  res.json(result.data);
+}));
+
+router.delete('/approvals/reports/:id', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const reportId = Number(req.params.id);
+  const owner = await findReportEmployee(reportId);
+  if (!owner) return res.status(404).json({ error: 'not found' });
+  if (!(await assertEmployeeInScope(owner.employee_id, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const ok = await deleteReport(reportId, owner.employee_id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 }));
 
 module.exports = router;

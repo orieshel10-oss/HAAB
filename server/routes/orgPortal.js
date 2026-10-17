@@ -7,7 +7,13 @@ const {
   assertEmployeeInScope,
   approveDay,
   rejectDay,
-  approveAllPending
+  approveAllPending,
+  unrejectDay,
+  getEmployeeDay,
+  createReport,
+  findReportEmployee,
+  updateReport,
+  deleteReport
 } = require('../approvals');
 
 const router = express.Router();
@@ -489,6 +495,62 @@ router.post('/approvals/approve-all', asyncHandler(async (req, res) => {
     await resolveAdminIdentity(req)
   );
   res.json({ ok: true, count });
+}));
+
+// Phase 4f: lets a time_admin/org_admin cancel a rejection, reverting the day to pending so it
+// reappears in the approvals list - an employee has no surface that exposes this at all.
+router.post('/approvals/unreject', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const { employeeId, date } = req.body || {};
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!(await assertEmployeeInScope(employeeId, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  await unrejectDay(employeeId, date);
+  res.json({ ok: true });
+}));
+
+// Phase 4f: full day editor for an admin correcting/adding an employee's attendance report,
+// mirroring the employee's own GET /api/attendance/day + /api/attendance/reports* (server/
+// index.js) but scoped by the admin's org/sub-org permissions instead of their own session.
+// Always writes to attendance_reports - raw attendance_events clock punches stay untouched.
+router.get('/approvals/day', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const employeeId = Number(req.query.employeeId);
+  const date = req.query.date;
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!(await assertEmployeeInScope(employeeId, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  res.json(await getEmployeeDay(employeeId, date));
+}));
+
+router.post('/approvals/reports', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const { employeeId } = req.body || {};
+  if (!employeeId) return res.status(400).json({ error: 'employeeId is required' });
+  if (!(await assertEmployeeInScope(employeeId, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const result = await createReport({ orgId, employeeId, body: req.body });
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result.data);
+}));
+
+router.put('/approvals/reports/:id', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const reportId = Number(req.params.id);
+  const owner = await findReportEmployee(reportId);
+  if (!owner) return res.status(404).json({ error: 'not found' });
+  if (!(await assertEmployeeInScope(owner.employee_id, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const result = await updateReport({ orgId, employeeId: owner.employee_id, reportId, body: req.body });
+  if (result.error) return res.status(result.status || 400).json({ error: result.error });
+  res.json(result.data);
+}));
+
+router.delete('/approvals/reports/:id', asyncHandler(async (req, res) => {
+  const { orgId, subOrgRestriction } = req.orgContext;
+  const reportId = Number(req.params.id);
+  const owner = await findReportEmployee(reportId);
+  if (!owner) return res.status(404).json({ error: 'not found' });
+  if (!(await assertEmployeeInScope(owner.employee_id, orgId, subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  const ok = await deleteReport(reportId, owner.employee_id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 }));
 
 module.exports = router;

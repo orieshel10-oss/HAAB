@@ -89,6 +89,37 @@ function standardMinutesForDay({ agreement, weekday, isHolidayEve }) {
   return agreement.day_standard_minutes;
 }
 
+// Phase 4f: which weekdays are fully off for this agreement beyond the single weekly_rest_day
+// column - derived from workdays_per_week (e.g. 5 workdays + Saturday rest => Friday is also
+// fully off, not the shortened eve-of-rest workday standardMinutesForDay above still gives it for
+// actual pay-split purposes). Used ONLY by standardQuotaMinutes below - never by the pay-split
+// engine (resolveDayPlan/computeWeekendRows), so this has zero effect on computed hours/pay.
+function fullyOffWeekdays(agreement) {
+  const daysOff = Math.max(1, 7 - (agreement.workdays_per_week || 6));
+  const offDays = new Set();
+  for (let i = 0; i < daysOff; i++) offDays.add((agreement.weekly_rest_day - i + 7) % 7);
+  return offDays;
+}
+
+// Standard-quota minutes for one calendar day, for the new "ימי תקן/שעות תקן" reporting metrics
+// only (the analyzed sheet's totals card) - a separate concept from the pay-split engine's own
+// day-standard logic above. 0 means "not a standard day" (the rest day, a derived fully-off day,
+// or an actual holiday). Eve-of-holiday is NOT excluded - it still counts as a full standard day
+// per the user's own confirmation, just at its own shortened minute value.
+function standardQuotaMinutes({ agreement, weekday, isHoliday, isHolidayEve }) {
+  if (isHoliday || fullyOffWeekdays(agreement).has(weekday)) return 0;
+  if (agreement.short_weekday !== null && agreement.short_weekday !== undefined && weekday === agreement.short_weekday) {
+    return agreement.short_weekday_standard_minutes || agreement.day_standard_minutes;
+  }
+  // Eve of an actual holiday, OR the day before the weekly rest day (when that day isn't already
+  // fully off per fullyOffWeekdays above - e.g. a 6-workday-week agreement's Friday) - both use
+  // the same shortened standard, mirroring standardMinutesForDay's own two-part check.
+  if (isHolidayEve || weekday === weeklyRestEveWeekday(agreement)) {
+    return agreement.shortened_day_standard_minutes || agreement.day_standard_minutes;
+  }
+  return agreement.day_standard_minutes;
+}
+
 // Computes a non-weekend day's rows: standard/break/night/tier split only (no Shabbat-window
 // concept - that's computeWeekendRows below). Shared by resolveDayPlan's regular-day branch and
 // by computeAverageRegularMinutes.
@@ -314,5 +345,6 @@ module.exports = {
   nightOverlapMinutes,
   standardMinutesForDay,
   weeklyRestEveWeekday,
+  standardQuotaMinutes,
   EMPTY_MINUTES
 };

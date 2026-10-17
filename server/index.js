@@ -33,8 +33,10 @@ const {
   resolveDayPlan,
   computeAverageRegularMinutes,
   standardMinutesForDay,
+  standardQuotaMinutes,
   EMPTY_MINUTES
 } = require('./agreementRules');
+const { isReportTypeWhitelisted, resolveReportBody } = require('./approvals');
 
 const app = express();
 app.use(express.json());
@@ -104,32 +106,6 @@ app.post('/api/clock', asyncHandler(async (req, res) => {
   );
   res.json({ lastEvent: { type, ts }, isIn: type === 'in' });
 }));
-
-// Validates a non-'attendance' type against this org's report-types whitelist (same
-// effective_from/effective_until window check used throughout the org-scoped routes).
-async function isReportTypeWhitelisted(orgId, type) {
-  const { rows } = await pool.query(
-    `SELECT 1 FROM org_report_types
-     WHERE org_id = $1 AND type_code = $2
-       AND (effective_from IS NULL OR effective_from <= to_char(now(), 'YYYY-MM-DD'))
-       AND (effective_until IS NULL OR effective_until >= to_char(now(), 'YYYY-MM-DD'))`,
-    [orgId, type]
-  );
-  return !!rows[0];
-}
-
-// entry/exit are bare 'HH:MM'; exitDate is resolved client-side (today or tomorrow, per the
-// cross-midnight rule) so this stays a simple date+time-string join, same as attendance_events.
-function resolveReportBody(body) {
-  const { date, type, entry, exit, exitDate, wholeDay, note } = body || {};
-  if (!date || !type) return { error: 'date and type are required' };
-  if (type === 'attendance' && wholeDay) return { error: 'wholeDay is not valid for type attendance' };
-  if (wholeDay) return { data: { date, type, entryTs: null, exitTs: null, note: note || null } };
-  if (!entry) return { error: 'entry is required unless wholeDay is set' };
-  const entryTs = new Date(`${date}T${entry}:00`).toISOString();
-  const exitTs = exit ? new Date(`${exitDate || date}T${exit}:00`).toISOString() : null;
-  return { data: { date, type, entryTs, exitTs, note: note || null } };
-}
 
 app.get('/api/attendance/day', asyncHandler(async (req, res) => {
   const date = req.query.date;
@@ -357,8 +333,17 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
   );
   const approvalByDate = Object.fromEntries(approvalRows.map((a) => [a.date, a]));
 
+  // Phase 4f: a day built entirely from real clock punches, with no manual attendance_reports row
+  // at all for that date, needs no explicit approval - its hours count toward the totals below
+  // automatically. Matches the same exemption in server/approvals.js's buildDayEntriesByEmployee
+  // (which is why such a day never shows as "pending" in either approvals screen either).
+  const reportDatesSet = new Set(reportRows.map((r) => r.date));
+
   const daysInMonth = new Date(year, month, 0).getDate();
-  const totals = { regular: 0, ot125: 0, ot150: 0, shabbat150: 0, shabbat175: 0, shabbat200: 0, absenceCounts: {} };
+  const totals = {
+    regular: 0, ot125: 0, ot150: 0, shabbat150: 0, shabbat175: 0, shabbat200: 0, absenceCounts: {},
+    standardDays: 0, standardMinutes: 0, actualDays: 0, actualMinutes: 0
+  };
   const days = [];
 
   for (let d = 1; d <= daysInMonth; d++) {
@@ -366,6 +351,7 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     const weekday = new Date(year, month - 1, d).getDay();
     const dayType = dayTypeFromDate(year, month, d);
     const isHoliday = holidaySet.has(ds);
+    const isHolidayEve = holidayEveSet.has(ds);
     let rows = rowsByDate[ds];
     if (!rows || !rows.length) {
       // No reports or clock sessions that day: a single blank placeholder row keeps the sheet
@@ -382,8 +368,13 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
 
     const approval = approvalByDate[ds];
     const approvalStatus = approval ? approval.status : 'pending';
+    const pureClockDay = !reportDatesSet.has(ds);
+    // A pure-clock day needs no approval by default (pending) - but an explicit rejection (an
+    // edge case: a day that was rejected back when it still had a report, which was since
+    // deleted) must still be respected, not silently re-included via the exemption.
+    const countsTowardTotals = approvalStatus === 'approved' || (pureClockDay && approvalStatus === 'pending');
 
-    if (approvalStatus === 'approved') {
+    if (countsTowardTotals) {
       rows.forEach((r) => {
         totals.regular += r.minutes.regular;
         totals.ot125 += r.minutes.ot125;
@@ -395,13 +386,29 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       });
     }
 
+    // Standard-vs-actual metrics (Phase 4f) - independent of approval status, describing schedule
+    // vs. real attendance for the month, not payroll-final totals.
+    const standardMinutesForQuota = agreement
+      ? standardQuotaMinutes({ agreement, weekday, isHoliday, isHolidayEve })
+      : (weekday === restDow || isHoliday ? 0 : standardDayMinutes(dayTypeFromDate(year, month, d)));
+    if (standardMinutesForQuota > 0) {
+      totals.standardDays += 1;
+      totals.standardMinutes += standardMinutesForQuota;
+    }
+    const actualMinutesForDay = rows.reduce((sum, r) =>
+      sum + r.minutes.regular + r.minutes.ot125 + r.minutes.ot150 + r.minutes.shabbat150 + r.minutes.shabbat175 + r.minutes.shabbat200, 0);
+    if (actualMinutesForDay > 0) {
+      totals.actualDays += 1;
+      totals.actualMinutes += actualMinutesForDay;
+    }
+
     const effectiveRestDow = agreement ? agreement.weekly_rest_day : restDow;
     days.push({
       date: ds,
       weekday,
       dayType,
       isHoliday,
-      isHolidayEve: holidayEveSet.has(ds),
+      isHolidayEve,
       isDayOff: weekday === effectiveRestDow || isHoliday,
       approvalStatus,
       rejectionReason: approval ? approval.rejection_reason : null,

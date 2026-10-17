@@ -196,7 +196,8 @@ const updateCal = createCalendarController({
     const cellData = {};
     sheet.days.forEach(day => {
       cachedSheetByDate[day.date] = day;
-      const totalMinutes = day.rows.reduce((sum, r) => sum + r.minutes.regular + r.minutes.ot125 + r.minutes.ot150 + r.minutes.shabbat, 0);
+      const totalMinutes = day.rows.reduce((sum, r) =>
+        sum + r.minutes.regular + r.minutes.ot125 + r.minutes.ot150 + r.minutes.shabbat150 + r.minutes.shabbat175 + r.minutes.shabbat200, 0);
       const reportTypes = day.rows.map(r => r.type).filter(t => t && t !== 'attendance');
       let dotGroup = null;
       if (reportTypes.some(t => (REPORT_TYPES_BY_CODE[t] || {}).category === 'absence')) dotGroup = 'sick';
@@ -433,6 +434,10 @@ function createSheetController() {
   const tbody = document.getElementById('sheet-tbody');
   const totalsLabel = document.getElementById('sheet-totals-label');
   const totalsRow = document.getElementById('sheet-totals-row');
+  const statStandardDays = document.getElementById('sheet-stat-standard-days');
+  const statStandardHours = document.getElementById('sheet-stat-standard-hours');
+  const statActualHours = document.getElementById('sheet-stat-actual-hours');
+  const statActualDays = document.getElementById('sheet-stat-actual-days');
   const state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
 
   function setMonth(delta) {
@@ -524,6 +529,11 @@ function createSheetController() {
       });
     });
 
+    statStandardDays.textContent = data.totals.standardDays;
+    statStandardHours.textContent = hoursCell(data.totals.standardMinutes) || '0:00';
+    statActualHours.textContent = hoursCell(data.totals.actualMinutes) || '0:00';
+    statActualDays.textContent = data.totals.actualDays;
+
     const absenceSummary = Object.entries(data.totals.absenceCounts)
       .map(([type, count]) => `${count} ${(REPORT_TYPES_BY_CODE[type] || { name: type }).name}`)
       .join(', ');
@@ -614,11 +624,13 @@ function createApprovalsController() {
           ${r.status === 'rejected' ? `<div class="appr-card-reason">${r.rejectionReason}</div>` : ''}
           ${r.status !== 'pending' ? `<div class="appr-card-reason">${r.reviewedByName || ''}</div>` : ''}
         </div>
-        ${r.status === 'pending' ? `
-          <div class="appr-card-actions">
+        <div class="appr-card-actions">
+          ${r.status === 'pending' ? `
             <button type="button" class="appr-approve-btn">אשר</button>
-            <button type="button" class="appr-reject-btn">דחה</button>
-          </div>` : ''}
+            <button type="button" class="appr-reject-btn">דחה</button>` : ''}
+          ${r.status === 'rejected' ? `<button type="button" class="appr-unreject-btn">ביטול דחייה</button>` : ''}
+          <button type="button" class="appr-edit-btn" data-name="${r.employeeName}">עריכה</button>
+        </div>
       </div>`;
     }).join('');
 
@@ -642,6 +654,28 @@ function createApprovalsController() {
       btn.addEventListener('click', () => {
         const card = btn.closest('.appr-card');
         openRejectModal(Number(card.dataset.employee), card.dataset.date);
+      });
+    });
+    listEl.querySelectorAll('.appr-unreject-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const card = btn.closest('.appr-card');
+        btn.disabled = true;
+        try {
+          await api('/api/employee/approvals/unreject', {
+            method: 'POST',
+            body: JSON.stringify({ employeeId: Number(card.dataset.employee), date: card.dataset.date })
+          });
+          await refresh();
+        } catch (err) {
+          alert(err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+    listEl.querySelectorAll('.appr-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.appr-card');
+        openDayEditor(Number(card.dataset.employee), btn.dataset.name, card.dataset.date);
       });
     });
   }
@@ -698,6 +732,158 @@ function createApprovalsController() {
   document.getElementById('appr-prev').addEventListener('click', () => setMonth(-1));
   document.getElementById('appr-next').addEventListener('click', () => setMonth(1));
   document.getElementById('appr-filter-toggle').addEventListener('click', toggleFilter);
+
+  /* ---------- admin day editor (Phase 4f): mirrors #screen-update's own day-panel editor, but
+     for a different employee's day, via /api/employee/approvals/day + /approvals/reports*. ---------- */
+  let editorEmployeeId = null;
+  let editorDate = null;
+  let editorReports = [];
+  let editingReportId = null;
+  let editorExitConfirmed = false;
+
+  async function openDayEditor(employeeId, employeeName, date) {
+    editorEmployeeId = employeeId;
+    editorDate = date;
+    editingReportId = null;
+    const day = await api(`/api/employee/approvals/day?employeeId=${employeeId}&date=${date}`);
+    editorReports = day.reports;
+
+    document.getElementById('appr-editor-employee-name').textContent = employeeName;
+    const [y, mo, d] = date.split('-').map(Number);
+    document.getElementById('appr-editor-date-label').textContent = `${pad(d)}.${pad(mo)}.${y}`;
+
+    const clockSessions = [];
+    let openIn = null;
+    day.events.forEach(ev => {
+      if (ev.type === 'in') { openIn = ev.ts; }
+      else if (ev.type === 'out' && openIn) { clockSessions.push(`${fmtTime(openIn)}-${fmtTime(ev.ts)}`); openIn = null; }
+    });
+    if (openIn) clockSessions.push(`${fmtTime(openIn)}-`);
+    document.getElementById('appr-editor-clock-events').textContent = clockSessions.length ? clockSessions.join(', ') : 'אין';
+
+    renderEditorReportsList();
+    closeReportForm();
+    document.getElementById('appr-day-editor').classList.remove('hidden');
+    document.getElementById('appr-day-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function renderEditorReportsList() {
+    const list = document.getElementById('appr-editor-reports-list');
+    if (!editorReports.length) {
+      list.innerHTML = '<div class="day-panel-empty">לא דווחה נוכחות</div>';
+      return;
+    }
+    list.innerHTML = editorReports.map(r => {
+      const timeLabel = !r.entryTs ? 'יום שלם' : (r.exitTs ? `${fmtTime(r.entryTs)} - ${fmtTime(r.exitTs)}` : `${fmtTime(r.entryTs)} -`);
+      return `
+        <div class="day-panel-report-row" data-id="${r.id}">
+          <button type="button" class="day-panel-report-delete" data-id="${r.id}" title="מחיקה">🗑</button>
+          <span class="day-panel-report-type">${reportTypeLabel(r.type)}</span>
+          <span class="day-panel-report-time">${timeLabel}</span>
+        </div>`;
+    }).join('');
+
+    list.querySelectorAll('.day-panel-report-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm('למחוק את הדיווח?')) return;
+        await api(`/api/employee/approvals/reports/${btn.dataset.id}`, { method: 'DELETE' });
+        await openDayEditor(editorEmployeeId, document.getElementById('appr-editor-employee-name').textContent, editorDate);
+        await refresh();
+      });
+    });
+    list.querySelectorAll('.day-panel-report-row').forEach(row => {
+      row.addEventListener('click', () => openReportForm(editorReports.find(r => String(r.id) === row.dataset.id)));
+    });
+  }
+
+  function syncReportFormVisibility() {
+    const type = document.getElementById('appr-report-type').value;
+    const wholeDayWrap = document.getElementById('appr-report-wholeday-wrap');
+    const wholeDayChecked = document.getElementById('appr-report-wholeday').checked;
+    wholeDayWrap.classList.toggle('hidden', type === 'attendance');
+    if (type === 'attendance') document.getElementById('appr-report-wholeday').checked = false;
+    document.getElementById('appr-report-time-row').style.display = (type !== 'attendance' && wholeDayChecked) ? 'none' : 'flex';
+  }
+
+  function openReportForm(report) {
+    editingReportId = report ? report.id : null;
+    const form = document.getElementById('appr-report-form');
+    document.getElementById('appr-report-type').innerHTML = buildTypeOptions(report ? report.type : 'attendance');
+    document.getElementById('appr-report-wholeday').checked = !!(report && !report.entryTs);
+    document.getElementById('appr-report-entry').value = report && report.entryTs ? fmtTime(report.entryTs) : '00:00';
+    document.getElementById('appr-report-exit').value = report && report.exitTs ? fmtTime(report.exitTs) : '00:00';
+    editorExitConfirmed = !!(report && report.exitTs);
+    const note = document.getElementById('appr-report-note');
+    note.value = (report && report.note) || '';
+    note.classList.toggle('hidden', !(report && report.note));
+    document.getElementById('appr-report-note-toggle').classList.toggle('hidden', !!(report && report.note));
+    syncReportFormVisibility();
+    form.classList.remove('hidden');
+    form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function closeReportForm() {
+    editingReportId = null;
+    editorExitConfirmed = false;
+    const form = document.getElementById('appr-report-form');
+    form.reset();
+    document.getElementById('appr-report-entry').value = '00:00';
+    document.getElementById('appr-report-exit').value = '00:00';
+    document.getElementById('appr-report-note').classList.add('hidden');
+    document.getElementById('appr-report-note-toggle').classList.remove('hidden');
+    form.classList.add('hidden');
+  }
+
+  document.getElementById('appr-report-entry').addEventListener('change', (e) => {
+    if (!e.target.value) e.target.value = '00:00';
+  });
+  document.getElementById('appr-report-exit').addEventListener('change', (e) => {
+    if (!e.target.value) { e.target.value = '00:00'; editorExitConfirmed = false; }
+    else editorExitConfirmed = true;
+  });
+
+  document.getElementById('appr-editor-add-btn').addEventListener('click', () => openReportForm(null));
+  document.getElementById('appr-report-cancel').addEventListener('click', closeReportForm);
+  document.getElementById('appr-report-type').addEventListener('change', syncReportFormVisibility);
+  document.getElementById('appr-report-wholeday').addEventListener('change', syncReportFormVisibility);
+  document.getElementById('appr-report-note-toggle').addEventListener('click', () => {
+    document.getElementById('appr-report-note').classList.remove('hidden');
+    document.getElementById('appr-report-note-toggle').classList.add('hidden');
+  });
+  document.getElementById('appr-editor-close').addEventListener('click', () => {
+    document.getElementById('appr-day-editor').classList.add('hidden');
+  });
+
+  document.getElementById('appr-report-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const type = document.getElementById('appr-report-type').value;
+    const wholeDay = type !== 'attendance' && document.getElementById('appr-report-wholeday').checked;
+    const entry = document.getElementById('appr-report-entry').value;
+    const exit = document.getElementById('appr-report-exit').value;
+    const note = document.getElementById('appr-report-note').value.trim();
+
+    if (!wholeDay && !entry) {
+      alert('יש להזין שעת כניסה, או לסמן יום שלם');
+      return;
+    }
+
+    const exitGiven = !wholeDay && editorExitConfirmed;
+    const body = {
+      employeeId: editorEmployeeId, date: editorDate, type, wholeDay,
+      entry: wholeDay ? null : entry, exit: exitGiven ? exit : null, note: note || null
+    };
+    if (exitGiven) body.exitDate = exit < entry ? shiftIsoDate(editorDate, 1) : editorDate;
+
+    if (editingReportId) {
+      await api(`/api/employee/approvals/reports/${editingReportId}`, { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      await api('/api/employee/approvals/reports', { method: 'POST', body: JSON.stringify(body) });
+    }
+
+    await openDayEditor(editorEmployeeId, document.getElementById('appr-editor-employee-name').textContent, editorDate);
+    await refresh();
+  });
 
   return { refresh, resetToCurrentMonth };
 }
