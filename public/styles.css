@@ -443,7 +443,18 @@ html, body {
 .presence-dot.presence-dot-green { background: var(--green); }
 .presence-dot.presence-dot-blue { background: var(--brand); }
 .presence-dot.presence-dot-red { background: var(--red); }
-.sheet-table tfoot td { font-weight: 800; border-top: 2px solid var(--border); }
+/* Sticky to the bottom of .sheet-table-wrap's own scroll area, mirroring the thead's sticky top -
+   without this, the totals row only existed after scrolling through the whole month's rows, which
+   is exactly what made it look like it "wasn't shown at all". */
+.sheet-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  font-weight: 800;
+  border-top: 2px solid var(--border);
+  background: var(--card-bg);
+  z-index: 2;
+}
+.sheet-table tfoot td:first-child { z-index: 3; }
 .rejection-dot {
   display: inline-block;
   width: 9px;
