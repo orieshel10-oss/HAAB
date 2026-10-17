@@ -334,6 +334,62 @@ html, body {
 .time-field label { font-size: 12px; color: var(--text-muted); }
 .time-field input[type="time"] { width: 100%; margin: 0; }
 
+/* attendance-approval screen (employee app, Phase 4e follow-up) */
+.appr-actions { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.appr-approve-all-btn { flex: 0 0 auto; width: auto; padding: 8px 16px; font-size: 13px; }
+.appr-list { display: flex; flex-direction: column; gap: 10px; }
+.appr-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.appr-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.appr-card-employee { font-weight: 700; font-size: 14px; }
+.appr-card-date { font-size: 13px; color: var(--text-muted); }
+.appr-card-summary { font-size: 13px; color: var(--text); margin-bottom: 6px; }
+.appr-card-status { font-size: 13px; font-weight: 700; }
+.appr-card-status.status-approved { color: var(--brand-dark); }
+.appr-card-status.status-rejected { color: var(--red-dark); }
+.appr-card-reason { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.appr-card-actions { display: flex; gap: 8px; margin-top: 8px; }
+.appr-card-actions button {
+  flex: 1;
+  border: none;
+  border-radius: 9px;
+  padding: 9px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.appr-approve-btn { background: var(--brand); color: #fff; }
+.appr-reject-btn { background: var(--red-dark); color: #fff; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+.appr-reject-card {
+  background: var(--card-bg);
+  border-radius: 14px;
+  padding: 18px;
+  width: 100%;
+  max-width: 360px;
+}
+.appr-reject-card h3 { margin: 0 0 10px; font-size: 16px; }
+.appr-reject-card textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 14px;
+  font-family: inherit;
+  margin-bottom: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
 /* analyzed sheet table */
 .sheet-table-wrap {
   overflow-x: auto;
@@ -432,7 +488,6 @@ html, body {
   margin-top: 6px;
 }
 .btn-auth:disabled { opacity: 0.6; cursor: default; }
-.role-choice-buttons { display: flex; flex-direction: column; gap: 12px; }
 .link-btn {
   display: block;
   width: 100%;

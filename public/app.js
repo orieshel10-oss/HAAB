@@ -19,8 +19,16 @@ async function loadReportTypes() {
 // silently insert invisible Unicode bidi/formatting marks around typed or pasted digits -
 // invisible on screen, but they break an exact-string server-side lookup/comparison. Strip those
 // plus surrounding whitespace before sending or storing any login-identifier field. Mirrors the
-// same sanitizeIdentifier() in server/auth.js, which is still the authoritative defense.
-const INVISIBLE_CHARS_RE = /[​-‏‪-‮⁦-⁩﻿]/g;
+// same sanitizeIdentifier() in server/auth.js, which is still the authoritative defense. Built
+// from numeric code points (not literal \u escapes) so no invisible character ever lands in this
+// source file itself.
+const INVISIBLE_CHAR_CODES = [
+  0x200B, 0x200C, 0x200D, 0x200E, 0x200F, // zero-width space/joiners, LTR/RTL marks
+  0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // bidi embedding/override
+  0x2066, 0x2067, 0x2068, 0x2069, // bidi isolate
+  0xFEFF // BOM / zero-width no-break space
+];
+const INVISIBLE_CHARS_RE = new RegExp(`[${INVISIBLE_CHAR_CODES.map((c) => String.fromCharCode(c)).join('')}]`, 'g');
 function sanitizeIdentifier(value) {
   return typeof value === 'string' ? value.replace(INVISIBLE_CHARS_RE, '').trim() : value;
 }
@@ -50,6 +58,7 @@ function showScreen(name) {
   // viewed before leaving these screens doesn't carry over.
   if (name === 'update') { updateCal.resetToToday(); updateCal.refresh(); loadDayPanel(updateCal.getSelectedDate()); }
   if (name === 'sheet') { sheetView.resetToCurrentMonth(); sheetView.refresh(); }
+  if (name === 'approvals') { approvalsView.resetToCurrentMonth(); approvalsView.refresh(); }
   resetIdleTimer();
 }
 
@@ -526,6 +535,160 @@ function minutesToLabel(minutes) {
   return `${h}:${pad(m)}`;
 }
 
+/* ---------- attendance-approval screen: shown only to an employee also linked to an
+   org_admin/time_admin row (home screen's "approvals-menu-item"). Reuses the same
+   /api/employee/approvals* endpoints (server/routes/employeePortal.js), which derive the
+   reviewer's org/sub-org scope from that link - no separate admin session is ever created. ---------- */
+const STATUS_LABELS = { pending: 'ממתין לאישור', approved: 'מאושר', rejected: 'נדחה' };
+
+function createApprovalsController() {
+  const titleEl = document.getElementById('appr-month-title');
+  const listEl = document.getElementById('appr-list');
+  const state = { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
+  let filter = 'pending';
+  let rowsCache = [];
+
+  function setMonth(delta) {
+    state.month += delta;
+    if (state.month > 12) { state.month = 1; state.year++; }
+    if (state.month < 1) { state.month = 12; state.year--; }
+    refresh();
+  }
+
+  function resetToCurrentMonth() {
+    const now = new Date();
+    state.year = now.getFullYear();
+    state.month = now.getMonth() + 1;
+  }
+
+  function toggleFilter() {
+    filter = filter === 'pending' ? 'all' : 'pending';
+    document.getElementById('appr-filter-toggle').textContent = filter === 'pending' ? 'הצגת הכל' : 'רק ממתינים לאישור';
+    render();
+  }
+
+  function fmtApprDate(iso) {
+    const [y, mo, d] = iso.split('-').map(Number);
+    const weekday = new Date(y, mo - 1, d).getDay();
+    return `${WEEKDAYS[weekday]} ${pad(d)}/${pad(mo)}`;
+  }
+
+  async function refresh() {
+    titleEl.textContent = `${MONTH_NAMES[state.month - 1]} ${state.year}`;
+    listEl.innerHTML = '<div class="day-panel-empty">טוען...</div>';
+    rowsCache = await api(`/api/employee/approvals?year=${state.year}&month=${state.month}`);
+    render();
+  }
+
+  function render() {
+    const rows = filter === 'pending' ? rowsCache.filter(r => r.status === 'pending') : rowsCache;
+    if (!rows.length) {
+      listEl.innerHTML = `<div class="day-panel-empty">${filter === 'pending' ? 'אין דיווחים הממתינים לאישור' : 'אין דיווחים בחודש זה'}</div>`;
+      return;
+    }
+    listEl.innerHTML = rows.map(r => {
+      const summary = r.summary.map(s => `${reportTypeLabel(s.type)}: ${s.timeLabel}`).join(', ');
+      return `
+      <div class="appr-card" data-employee="${r.employeeId}" data-date="${r.date}">
+        <div class="appr-card-head">
+          <span class="appr-card-employee">${r.employeeName}</span>
+          <span class="appr-card-date">${fmtApprDate(r.date)}</span>
+        </div>
+        <div class="appr-card-summary">${summary}${r.totalMinutes ? ` (${minutesToLabel(r.totalMinutes)})` : ''}</div>
+        <div class="appr-card-status status-${r.status}">
+          ${STATUS_LABELS[r.status]}
+          ${r.status === 'rejected' ? `<div class="appr-card-reason">${r.rejectionReason}</div>` : ''}
+          ${r.status !== 'pending' ? `<div class="appr-card-reason">${r.reviewedByName || ''}</div>` : ''}
+        </div>
+        ${r.status === 'pending' ? `
+          <div class="appr-card-actions">
+            <button type="button" class="appr-approve-btn">אשר</button>
+            <button type="button" class="appr-reject-btn">דחה</button>
+          </div>` : ''}
+      </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.appr-approve-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const card = btn.closest('.appr-card');
+        btn.disabled = true;
+        try {
+          await api('/api/employee/approvals/approve', {
+            method: 'POST',
+            body: JSON.stringify({ employeeId: Number(card.dataset.employee), date: card.dataset.date })
+          });
+          await refresh();
+        } catch (err) {
+          alert(err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+    listEl.querySelectorAll('.appr-reject-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.appr-card');
+        openRejectModal(Number(card.dataset.employee), card.dataset.date);
+      });
+    });
+  }
+
+  let rejectTarget = null;
+  function openRejectModal(employeeId, date) {
+    rejectTarget = { employeeId, date };
+    document.getElementById('appr-reject-reason').value = '';
+    document.getElementById('appr-reject-msg').textContent = '';
+    document.getElementById('appr-reject-overlay').classList.remove('hidden');
+  }
+
+  document.getElementById('appr-reject-cancel').addEventListener('click', () => {
+    document.getElementById('appr-reject-overlay').classList.add('hidden');
+  });
+  document.getElementById('appr-reject-confirm').addEventListener('click', async () => {
+    const reason = document.getElementById('appr-reject-reason').value.trim();
+    const msg = document.getElementById('appr-reject-msg');
+    if (!reason) { msg.textContent = 'נדרש לציין סיבת דחייה'; return; }
+    const btn = document.getElementById('appr-reject-confirm');
+    btn.disabled = true;
+    try {
+      await api('/api/employee/approvals/reject', {
+        method: 'POST',
+        body: JSON.stringify({ employeeId: rejectTarget.employeeId, date: rejectTarget.date, reason })
+      });
+      document.getElementById('appr-reject-overlay').classList.add('hidden');
+      await refresh();
+    } catch (err) {
+      msg.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('appr-approve-all-btn').addEventListener('click', async () => {
+    if (!confirm(`לאשר את כל הדיווחים הממתינים של ${MONTH_NAMES[state.month - 1]} ${state.year}?`)) return;
+    const btn = document.getElementById('appr-approve-all-btn');
+    btn.disabled = true;
+    try {
+      const result = await api('/api/employee/approvals/approve-all', {
+        method: 'POST',
+        body: JSON.stringify({ year: state.year, month: state.month })
+      });
+      await refresh();
+      alert(`אושרו ${result.count} דיווחים`);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('appr-prev').addEventListener('click', () => setMonth(-1));
+  document.getElementById('appr-next').addEventListener('click', () => setMonth(1));
+  document.getElementById('appr-filter-toggle').addEventListener('click', toggleFilter);
+
+  return { refresh, resetToCurrentMonth };
+}
+const approvalsView = createApprovalsController();
+
 /* ---------- auth: org selection + employee login ---------- */
 const ORG_CODE_STORAGE_KEY = 'haab_org_code';
 const EMPLOYEE_ID_STORAGE_KEY = 'haab_employee_id';
@@ -636,7 +799,9 @@ employeeLoginForm.addEventListener('submit', async (e) => {
     if (fullName) localStorage.setItem(EMPLOYEE_NAME_STORAGE_KEY, fullName);
     employeeLoginForm.reset();
     await loadReportTypes();
-    await checkAdminLinkAndProceed();
+    showScreen('home');
+    refreshStatus();
+    checkApprovalsAccess();
   } catch (e2) {
     msg.textContent = 'שגיאת תקשורת - נסו שוב';
   }
@@ -664,64 +829,26 @@ document.getElementById('employee-logout-btn').addEventListener('click', async (
   showAuthGate();
 });
 
-/* ---------- dual-role step-up: shown only for an employee also linked to an org_admin/time_admin
-   row (server/routes/employeePortal.js's GET /admin-link) - everyone else goes straight home. ---------- */
-async function checkAdminLinkAndProceed() {
+/* ---------- attendance-approval menu item: shown only for an employee also linked to an
+   org_admin/time_admin row (server/routes/employeePortal.js's GET /admin-link). No separate
+   login step or TOTP prompt - the employee's own login already proved who they are, so being
+   linked is all it takes to also see this menu item and screen. Checked once right after a
+   fresh login and once after a restored session's GET /api/employee/me. ---------- */
+async function checkApprovalsAccess() {
   let linked = false;
   try {
     const res = await fetch('/api/employee/admin-link');
     if (res.ok) linked = (await res.json()).linked;
   } catch (e) {}
-  if (linked) {
-    showScreen('role-choice');
-  } else {
-    showScreen('home');
-    refreshStatus();
-  }
+  document.getElementById('approvals-menu-item').classList.toggle('hidden', !linked);
 }
-
-document.getElementById('role-choice-employee-btn').addEventListener('click', () => {
-  showScreen('home');
-  refreshStatus();
-});
-document.getElementById('role-choice-admin-btn').addEventListener('click', () => {
-  document.getElementById('admin-totp-code').value = '';
-  document.getElementById('admin-totp-msg').textContent = '';
-  showScreen('admin-totp');
-  document.getElementById('admin-totp-code').focus();
-});
-document.querySelector('[data-back-to-role-choice]').addEventListener('click', () => {
-  showScreen('role-choice');
-});
-
-document.getElementById('admin-totp-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const msg = document.getElementById('admin-totp-msg');
-  msg.textContent = '';
-  const totp = sanitizeIdentifier(document.getElementById('admin-totp-code').value);
-  try {
-    const res = await fetch('/api/employee/step-up-admin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ totp })
-    });
-    if (!res.ok) {
-      msg.textContent = 'קוד אימות שגוי';
-      document.getElementById('admin-totp-code').focus();
-      return;
-    }
-    window.location.href = '/admin/organization.html';
-  } catch (e2) {
-    msg.textContent = 'שגיאת תקשורת - נסו שוב';
-  }
-});
 
 /* ---------- idle auto-logout: 10 minutes with no interaction while an authenticated screen is
    showing logs the employee out back to the password-only login screen (org/id stay remembered).
    Explicitly not needed if the user would instead use the home screen's own in/out buttons for a
    real clock punch - this only guards an unattended, already-open session. ---------- */
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
-const AUTHENTICATED_SCREENS = ['home', 'update', 'sheet'];
+const AUTHENTICATED_SCREENS = ['home', 'update', 'sheet', 'approvals'];
 let idleTimer = null;
 
 function isOnAuthenticatedScreen() {
@@ -751,7 +878,9 @@ function resetIdleTimer() {
     const res = await fetch('/api/employee/me');
     if (res.ok) {
       await loadReportTypes();
-      await checkAdminLinkAndProceed();
+      showScreen('home');
+      refreshStatus();
+      checkApprovalsAccess();
     } else {
       await showAuthGate();
     }

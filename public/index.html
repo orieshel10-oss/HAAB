@@ -99,6 +99,13 @@
           <span class="menu-label">גליון מנותח</span>
           <span class="menu-arrow">‹</span>
         </button>
+        <!-- מוצג רק לעובד שמקושר גם לחשבון org admin/time admin (server/routes/employeePortal.js
+             GET /admin-link) - בלי שלב אימות נוסף, מעבר לכניסה הרגילה של העובד. -->
+        <button class="menu-item hidden" id="approvals-menu-item" data-nav="approvals">
+          <span class="menu-icon">✅</span>
+          <span class="menu-label">אישור דיווחים</span>
+          <span class="menu-arrow">‹</span>
+        </button>
         <button class="menu-item" id="employee-logout-btn">
           <span class="menu-icon">🚪</span>
           <span class="menu-label">יציאה</span>
@@ -108,37 +115,37 @@
     </div>
   </section>
 
-  <!-- מסך בחירת תפקיד: מוצג רק למשתמש שמוגדר גם כעובד וגם כ-org admin/time admin -->
-  <section class="screen" id="screen-role-choice">
-    <header class="topbar topbar-brand">
-      <img src="icons/icon-192.png" alt="HAAB" class="brand-logo" />
-      <h1>HAAB</h1>
+  <!-- מסך אישור דיווחים: מוצג רק לעובד המקושר גם כ-org admin/time admin -->
+  <section class="screen" id="screen-approvals">
+    <header class="topbar">
+      <button class="back-btn" data-back>›</button>
+      <h1>אישור דיווחים</h1>
     </header>
     <div class="content">
-      <p class="auth-intro">להמשיך כעובד או כמנהל?</p>
-      <div class="role-choice-buttons">
-        <button class="btn-auth" id="role-choice-employee-btn">עובד</button>
-        <button class="btn-auth" id="role-choice-admin-btn">מנהל</button>
+      <div class="cal-nav">
+        <button class="cal-nav-btn" id="appr-prev">›</button>
+        <div class="cal-title" id="appr-month-title"></div>
+        <button class="cal-nav-btn" id="appr-next">‹</button>
       </div>
+      <div class="appr-actions">
+        <button class="link-btn-small" id="appr-filter-toggle">הצגת הכל</button>
+        <button class="modal-primary appr-approve-all-btn" id="appr-approve-all-btn">אשר הכל</button>
+      </div>
+      <div class="appr-list" id="appr-list"></div>
     </div>
   </section>
 
-  <!-- מסך קוד אימות מנהל: TOTP בלבד, הסיסמה כבר אומתה בכניסת העובד -->
-  <section class="screen" id="screen-admin-totp">
-    <header class="topbar">
-      <button class="back-btn" data-back-to-role-choice>›</button>
-      <h1>כניסת מנהל</h1>
-    </header>
-    <div class="content">
-      <p class="auth-intro">הזינו קוד אימות מ-Google Authenticator</p>
-      <form class="auth-form" id="admin-totp-form">
-        <label>קוד אימות</label>
-        <input id="admin-totp-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
-        <div class="field-msg error" id="admin-totp-msg"></div>
-        <button type="submit" class="btn-auth">כניסה</button>
-      </form>
+  <div class="modal-overlay hidden" id="appr-reject-overlay">
+    <div class="appr-reject-card">
+      <h3>סיבת דחייה</h3>
+      <textarea id="appr-reject-reason" rows="4" placeholder="נדרש לציין סיבה"></textarea>
+      <div class="field-msg error" id="appr-reject-msg"></div>
+      <div class="modal-actions">
+        <button type="button" class="modal-secondary" id="appr-reject-cancel">ביטול</button>
+        <button type="button" class="modal-primary" id="appr-reject-confirm">דחייה</button>
+      </div>
     </div>
-  </section>
+  </div>
 
   <!-- מסך עדכון נוכחות: מאחד דיווח היעדרות + השלמת נוכחות + עדכון דיווחים קיימים -->
   <section class="screen" id="screen-update">

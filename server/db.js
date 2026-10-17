@@ -83,9 +83,11 @@ async function init() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(org_id, email)
     );
-    -- Phase 4e: optional link so a person who is both an employee and an Org/Time Admin can step
-    -- up into their admin role from inside the employee PWA (server/routes/employeePortal.js'
-    -- /admin-link and /step-up-admin). NULL for every admin with no employee record - unaffected.
+    -- Phase 4e: optional link so a person who is both an employee and an Org/Time Admin logs in
+    -- through the normal employee PWA login and additionally sees the attendance-approval screen
+    -- there (server/routes/employeePortal.js's /admin-link and /approvals* routes) - no separate
+    -- admin session or TOTP step is involved. NULL for every admin with no employee record, who
+    -- still only reaches the admin area through the separate web admin login - unaffected.
     ALTER TABLE org_admins ADD COLUMN IF NOT EXISTS employee_id INTEGER REFERENCES employees(id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_org_admins_employee_id ON org_admins(employee_id) WHERE employee_id IS NOT NULL;
 

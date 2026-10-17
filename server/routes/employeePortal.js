@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
-const { verifyPassword, verifyTotpCode, requireEmployee, sanitizeIdentifier } = require('../auth');
+const { verifyPassword, requireEmployee, sanitizeIdentifier } = require('../auth');
+const { listApprovals, assertEmployeeInScope, approveDay, rejectDay, approveAllPending } = require('../approvals');
 
 const router = express.Router();
 
@@ -99,8 +100,12 @@ router.get('/me', requireEmployee, asyncHandler(async (req, res) => {
 }));
 
 // Phase 4e: a person who is both an employee and an Org/Time Admin (linked explicitly via
-// org_admins.employee_id, set in org-admins.html) can step up into their admin role from inside
-// the employee PWA instead of needing the separate web admin login.
+// org_admins.employee_id, set in org-admins.html) logs in exactly like any other employee, but
+// additionally gets the attendance-approval screen inside the employee PWA itself - no separate
+// login step, no TOTP prompt (the employee password already proved who they are). An Org/Time
+// Admin with no linked employee record is unaffected and still only reachable via the separate
+// web admin login (org-login.html, email+password+TOTP). Used by the home screen to decide
+// whether to show the "אישור דיווחים" menu item at all.
 router.get('/admin-link', requireEmployee, asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT email, admin_type FROM org_admins WHERE employee_id = $1',
@@ -110,25 +115,64 @@ router.get('/admin-link', requireEmployee, asyncHandler(async (req, res) => {
   res.json({ linked: true, adminType: rows[0].admin_type, email: rows[0].email });
 }));
 
-router.post('/step-up-admin', requireEmployee, asyncHandler(async (req, res) => {
-  const { totp: totpRaw } = req.body || {};
-  if (!totpRaw) return res.status(400).json({ error: 'totp is required' });
-  const totp = sanitizeIdentifier(totpRaw);
+// Resolves the org context (orgId + sub-org scope for a time_admin) from the org_admins row
+// linked to the logged-in employee, exactly like resolveOrgContext (server/auth.js) does for a
+// real admin session - but here derived from an employee session, and scoped to approvals only
+// (not full org-admin API access) since that's all this link is meant to grant.
+async function resolveLinkedAdminContext(req) {
   const { rows } = await pool.query(
-    'SELECT id, totp_secret FROM org_admins WHERE employee_id = $1',
+    'SELECT id, org_id, name, admin_type FROM org_admins WHERE employee_id = $1',
     [req.session.employeeId]
   );
   const admin = rows[0];
-  if (!admin) return res.status(404).json({ error: 'no linked admin account' });
-  if (!verifyTotpCode(admin.totp_secret, totp)) {
-    return res.status(401).json({ error: 'invalid authenticator code' });
+  if (!admin) return null;
+  let subOrgRestriction = null;
+  if (admin.admin_type === 'time_admin') {
+    const subRows = await pool.query('SELECT sub_org_id FROM org_admin_sub_orgs WHERE org_admin_id = $1', [admin.id]);
+    subOrgRestriction = subRows.rows.map((r) => r.sub_org_id);
   }
-  // Deliberately does NOT clear employeeId/employeeOrgId, unlike every other login handler's
-  // mutual-exclusivity convention - this person is valid as both for the rest of this session.
-  // Safe because requireEmployee only checks employeeId and resolveOrgContext only checks
-  // orgAdminId/systemAdminId - neither cares whether the other is also set.
-  req.session.orgAdminId = admin.id;
+  return { orgId: admin.org_id, subOrgRestriction, reviewer: { role: admin.admin_type, name: admin.name } };
+}
+
+router.get('/approvals', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const year = Number(req.query.year);
+  const month = Number(req.query.month);
+  res.json(await listApprovals({ orgId: ctx.orgId, subOrgRestriction: ctx.subOrgRestriction, year, month }));
+}));
+
+router.post('/approvals/approve', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const { employeeId, date } = req.body || {};
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!(await assertEmployeeInScope(employeeId, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  await approveDay(employeeId, date, ctx.reviewer);
   res.json({ ok: true });
+}));
+
+router.post('/approvals/reject', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const { employeeId, date, reason } = req.body || {};
+  if (!employeeId || !date) return res.status(400).json({ error: 'employeeId and date are required' });
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'reason is required' });
+  if (!(await assertEmployeeInScope(employeeId, ctx.orgId, ctx.subOrgRestriction))) return res.status(403).json({ error: 'not authorized' });
+  await rejectDay(employeeId, date, reason, ctx.reviewer);
+  res.json({ ok: true });
+}));
+
+router.post('/approvals/approve-all', requireEmployee, asyncHandler(async (req, res) => {
+  const ctx = await resolveLinkedAdminContext(req);
+  if (!ctx) return res.status(403).json({ error: 'not authorized' });
+  const { year, month } = req.body || {};
+  if (!year || !month) return res.status(400).json({ error: 'year and month are required' });
+  const count = await approveAllPending(
+    { orgId: ctx.orgId, subOrgRestriction: ctx.subOrgRestriction, year: Number(year), month: Number(month) },
+    ctx.reviewer
+  );
+  res.json({ ok: true, count });
 }));
 
 module.exports = router;

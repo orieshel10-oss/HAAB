@@ -9,7 +9,15 @@ const BCRYPT_ROUNDS = 12;
 // pasted digits - invisible on screen, but they make an exact-string DB lookup or TOTP/ID
 // comparison fail even though the visible text looks identical to what was actually set.
 // Strip those plus surrounding whitespace from any login-identifier field before using it.
-const INVISIBLE_CHARS_RE = /[​-‏‪-‮⁦-⁩﻿]/g;
+// Built from numeric code points (not literal \u escapes) so no invisible character ever lands
+// in this source file itself.
+const INVISIBLE_CHAR_CODES = [
+  0x200B, 0x200C, 0x200D, 0x200E, 0x200F, // zero-width space/joiners, LTR/RTL marks
+  0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // bidi embedding/override
+  0x2066, 0x2067, 0x2068, 0x2069, // bidi isolate
+  0xFEFF // BOM / zero-width no-break space
+];
+const INVISIBLE_CHARS_RE = new RegExp(`[${INVISIBLE_CHAR_CODES.map((c) => String.fromCharCode(c)).join('')}]`, 'g');
 function sanitizeIdentifier(value) {
   return typeof value === 'string' ? value.replace(INVISIBLE_CHARS_RE, '').trim() : value;
 }
