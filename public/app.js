@@ -466,12 +466,18 @@ function createSheetController() {
     return category === 'presence' ? 'presence-dot-blue' : 'presence-dot-red';
   }
 
+  let reasonByDate = {};
+
   function render(data) {
     const today = todayStr();
+    reasonByDate = {};
+    data.days.forEach((d) => { if (d.approvalStatus === 'rejected') reasonByDate[d.date] = d.rejectionReason; });
+
     tbody.innerHTML = data.days.map(day => {
       const rowClasses = [];
       if (day.date === today) rowClasses.push('today');
       if (day.isDayOff) rowClasses.push('day-off');
+      const rejected = day.approvalStatus === 'rejected';
 
       const dayBadges = [];
       if (day.isHoliday) dayBadges.push('חג');
@@ -480,6 +486,7 @@ function createSheetController() {
       const weekdayCell = dayBadges.length
         ? `${WEEKDAYS[day.weekday]}<br><small>${dayBadges.join(', ')}</small>`
         : WEEKDAYS[day.weekday];
+      const dateCell = `${Number(day.date.slice(8, 10))}${rejected ? `<span class="rejection-dot" data-date="${day.date}" title="נדחה - הקש לצפייה בהערה">●</span>` : ''}`;
 
       return day.rows.map((row, i) => {
         const noteParts = [];
@@ -488,24 +495,33 @@ function createSheetController() {
         const noteClass = row.type && row.type !== 'attendance'
           ? ((REPORT_TYPES_BY_CODE[row.type] || {}).category === 'presence' ? 'note-vacation' : 'note-sick')
           : '';
+        const totalHoursCell = row.firstIn && row.lastOut ? hoursCell(Math.round((new Date(row.lastOut) - new Date(row.firstIn)) / 60000)) : '';
+        // A rejected day's hours aren't broken into pay categories at all here - only the raw
+        // total, shown in red, so it can't be mistaken for an approved/pending analysis.
         return `
         <tr class="${rowClasses.join(' ')}">
-          ${i === 0 ? `<td rowspan="${day.rows.length}">${Number(day.date.slice(8, 10))}</td>` : ''}
+          ${i === 0 ? `<td rowspan="${day.rows.length}">${dateCell}</td>` : ''}
           ${i === 0 ? `<td rowspan="${day.rows.length}">${weekdayCell}</td>` : ''}
           <td><span class="presence-dot ${dotClassForRow(row)}"></span></td>
           <td>${row.firstIn ? fmtTime(row.firstIn) : ''}</td>
           <td>${row.lastOut ? fmtTime(row.lastOut) : ''}</td>
-          <td>${row.firstIn && row.lastOut ? hoursCell(Math.round((new Date(row.lastOut) - new Date(row.firstIn)) / 60000)) : ''}</td>
-          <td>${hoursCell(row.minutes.regular)}</td>
-          <td>${hoursCell(row.minutes.ot125)}</td>
-          <td>${hoursCell(row.minutes.ot150)}</td>
-          <td>${hoursCell(row.minutes.shabbat150)}</td>
-          <td>${hoursCell(row.minutes.shabbat175)}</td>
-          <td>${hoursCell(row.minutes.shabbat200)}</td>
+          <td class="${rejected ? 'rejected-hours' : ''}">${totalHoursCell}</td>
+          <td>${rejected ? '' : hoursCell(row.minutes.regular)}</td>
+          <td>${rejected ? '' : hoursCell(row.minutes.ot125)}</td>
+          <td>${rejected ? '' : hoursCell(row.minutes.ot150)}</td>
+          <td>${rejected ? '' : hoursCell(row.minutes.shabbat150)}</td>
+          <td>${rejected ? '' : hoursCell(row.minutes.shabbat175)}</td>
+          <td>${rejected ? '' : hoursCell(row.minutes.shabbat200)}</td>
           <td class="${noteClass}">${noteParts.join(' - ')}</td>
         </tr>`;
       }).join('');
     }).join('');
+
+    tbody.querySelectorAll('.rejection-dot').forEach((dot) => {
+      dot.addEventListener('click', () => {
+        alert(reasonByDate[dot.dataset.date] || 'הדיווח נדחה');
+      });
+    });
 
     const absenceSummary = Object.entries(data.totals.absenceCounts)
       .map(([type, count]) => `${count} ${(REPORT_TYPES_BY_CODE[type] || { name: type }).name}`)

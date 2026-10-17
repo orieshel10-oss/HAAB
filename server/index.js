@@ -344,6 +344,19 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
     (rowsByDate[ds] = rowsByDate[ds] || []).push(...wholeDayRows);
   });
 
+  // Approval status (Phase 4d) per calendar date - a day with no row is implicitly "pending",
+  // same convention the approvals screen itself uses. Feeds two things in the response below: the
+  // footer totals only ever sum approved days (pending/rejected hours are real and shown per-row,
+  // but not yet payroll-final), and a rejected day's row suppresses its own category breakdown in
+  // favor of a single red total (server/index.js doesn't change the computed minutes themselves -
+  // this is purely what the response/frontend chooses to surface for a day that was sent back).
+  const { rows: approvalRows } = await pool.query(
+    `SELECT date, status, rejection_reason FROM attendance_approvals
+     WHERE employee_id = $1 AND date BETWEEN $2 AND $3`,
+    [req.session.employeeId, start, end]
+  );
+  const approvalByDate = Object.fromEntries(approvalRows.map((a) => [a.date, a]));
+
   const daysInMonth = new Date(year, month, 0).getDate();
   const totals = { regular: 0, ot125: 0, ot150: 0, shabbat150: 0, shabbat175: 0, shabbat200: 0, absenceCounts: {} };
   const days = [];
@@ -367,15 +380,20 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       }];
     }
 
-    rows.forEach((r) => {
-      totals.regular += r.minutes.regular;
-      totals.ot125 += r.minutes.ot125;
-      totals.ot150 += r.minutes.ot150;
-      totals.shabbat150 += r.minutes.shabbat150;
-      totals.shabbat175 += r.minutes.shabbat175;
-      totals.shabbat200 += r.minutes.shabbat200;
-      if (r.type && r.type !== 'attendance') totals.absenceCounts[r.type] = (totals.absenceCounts[r.type] || 0) + 1;
-    });
+    const approval = approvalByDate[ds];
+    const approvalStatus = approval ? approval.status : 'pending';
+
+    if (approvalStatus === 'approved') {
+      rows.forEach((r) => {
+        totals.regular += r.minutes.regular;
+        totals.ot125 += r.minutes.ot125;
+        totals.ot150 += r.minutes.ot150;
+        totals.shabbat150 += r.minutes.shabbat150;
+        totals.shabbat175 += r.minutes.shabbat175;
+        totals.shabbat200 += r.minutes.shabbat200;
+        if (r.type && r.type !== 'attendance') totals.absenceCounts[r.type] = (totals.absenceCounts[r.type] || 0) + 1;
+      });
+    }
 
     const effectiveRestDow = agreement ? agreement.weekly_rest_day : restDow;
     days.push({
@@ -385,6 +403,8 @@ app.get('/api/attendance/sheet', asyncHandler(async (req, res) => {
       isHoliday,
       isHolidayEve: holidayEveSet.has(ds),
       isDayOff: weekday === effectiveRestDow || isHoliday,
+      approvalStatus,
+      rejectionReason: approval ? approval.rejection_reason : null,
       rows
     });
   }

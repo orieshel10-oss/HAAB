@@ -444,6 +444,17 @@ html, body {
 .presence-dot.presence-dot-blue { background: var(--brand); }
 .presence-dot.presence-dot-red { background: var(--red); }
 .sheet-table tfoot td { font-weight: 800; border-top: 2px solid var(--border); }
+.rejection-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+  margin-right: 4px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.sheet-table td.rejected-hours { color: var(--red-dark); font-weight: 700; }
 .sheet-note { font-size: 11px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; }
 
 /* org-select / employee-login screens */
